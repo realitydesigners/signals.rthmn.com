@@ -1,9 +1,12 @@
-node_modules/
-dist/
+# Rust build artifacts
+target/
+
+# Environment
 .env
 .env.local
-*.log
-logs/
-.DS_Store
-bun.lockb
 
+# OS
+.DS_Store
+
+# Logs
+*.log
