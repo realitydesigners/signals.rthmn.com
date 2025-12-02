@@ -1,0 +1,6 @@
+target/
+debug/
+*.pdb
+.env
+.DS_Store
+
