@@ -1,6 +1,9 @@
-target/
-debug/
-*.pdb
+node_modules/
+dist/
 .env
+.env.local
+*.log
+logs/
 .DS_Store
+bun.lockb
 
