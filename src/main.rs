@@ -8,6 +8,8 @@ use tokio_tungstenite::{connect_async, tungstenite::Message as TungMessage};
 use tower_http::cors::{Any, CorsLayer};
 use tracing::{info, warn};
 
+const HEARTBEAT_SECS: u64 = 30;
+
 pub struct AppState {
     scanner: RwLock<MarketScanner>,
     generator: SignalGenerator,
@@ -149,6 +151,7 @@ async fn server_client(state: Arc<AppState>, url: String, token: String, mut sig
                 info!("Connected to server.rthmn.com");
                 let (mut write, mut read) = ws.split();
                 let mut authed = false;
+                let mut heartbeat_interval = tokio::time::interval(tokio::time::Duration::from_secs(HEARTBEAT_SECS));
 
                 loop {
                     tokio::select! {
@@ -173,6 +176,9 @@ async fn server_client(state: Arc<AppState>, url: String, token: String, mut sig
                                         }
                                     }
                                 }
+                                Ok(TungMessage::Ping(data)) => {
+                                    let _ = write.send(TungMessage::Pong(data)).await;
+                                }
                                 Ok(TungMessage::Close(_)) => break,
                                 Err(e) => { warn!("server.rthmn.com error: {}", e); break; }
                                 _ => {}
@@ -193,6 +199,10 @@ async fn server_client(state: Arc<AppState>, url: String, token: String, mut sig
                             let _ = write.send(TungMessage::Binary(msg)).await;
                             *state.signals_sent.write().await += 1;
                             info!("Signal sent: {} {} L{}", signal.pair, signal.signal_type, signal.level);
+                        }
+                        _ = heartbeat_interval.tick(), if authed => {
+                            // Send ping to keep connection alive
+                            let _ = write.send(TungMessage::Ping(vec![])).await;
                         }
                     }
                 }
@@ -219,8 +229,11 @@ async fn process_box_update(state: &Arc<AppState>, pair: &str, data: &serde_json
     
     for signal in state.generator.generate_signals(pair, &patterns, &boxes, price) {
         info!("SIGNAL: {} {} L{} {:?}", signal.pair, signal.signal_type, signal.level, signal.pattern_sequence);
+        for (i, b) in signal.data.box_details.iter().enumerate() {
+            info!("  Box {}: {} H:{:.5} L:{:.5}", i + 1, b.integer_value, b.high, b.low);
+        }
         for t in signal.data.trade_opportunities.iter().filter(|t| t.is_valid) {
-            info!("  {} E:{:.2} S:{:.2} T:{:.2} R:R:{:.2}", t.rule_id, t.entry.unwrap_or(0.0), t.stop_loss.unwrap_or(0.0), t.target.unwrap_or(0.0), t.risk_reward_ratio.unwrap_or(0.0));
+            info!("  {} E:{:.5} S:{:.5} T:{:.5} R:R:{:.2}", t.rule_id, t.entry.unwrap_or(0.0), t.stop_loss.unwrap_or(0.0), t.target.unwrap_or(0.0), t.risk_reward_ratio.unwrap_or(0.0));
         }
         let _ = state.signal_tx.send(signal).await;
     }
