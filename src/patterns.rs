@@ -8,7 +8,10 @@ lazy_static! {
         let mut m: HashMap<i32, Vec<Vec<i32>>> = HashMap::new();
         
         // Original patterns (boxes 10-2000)
-        m.insert(23, vec![vec![-20, 13]]);
+        m.insert(23, vec![
+            vec![-20, 13],
+            vec![23],
+            ]);
         m.insert(27, vec![vec![-23, 13]]);
         m.insert(31, vec![vec![-27, 13]]);
         m.insert(36, vec![vec![-31, 13]]);

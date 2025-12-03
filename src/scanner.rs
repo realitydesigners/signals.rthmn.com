@@ -56,11 +56,25 @@ impl MarketScanner {
                 pattern.iter().map(|&v| -v).collect()
             };
 
-            let mut full_path = current_path.clone();
-            full_path.extend(&adjusted);
             let last_value = *adjusted.last().unwrap();
 
-            // Check for cycle (same absolute value)
+            // Self-terminating pattern (e.g., [23] when at key 23)
+            // Save current path WITHOUT adding duplicate
+            if adjusted.len() == 1 && last_value.abs() == current_key.abs() {
+                let path = TraversalPath {
+                    path: current_path.clone(),
+                    length: current_path.len(),
+                    starting_point: original_start,
+                    signal_type: if original_start > 0 { SignalType::LONG } else { SignalType::SHORT },
+                };
+                self.all_paths.push(path);
+                continue;
+            }
+
+            let mut full_path = current_path.clone();
+            full_path.extend(&adjusted);
+
+            // Check for cycle (same absolute value) - for multi-element patterns
             if last_value.abs() == current_key.abs() {
                 let path = TraversalPath {
                     path: full_path.clone(),
