@@ -1,6 +1,3 @@
-/// Instruments configuration - must match rthmn npm package
-/// Returns (point, digits) for each symbol
-
 pub fn get_instrument_config(pair: &str) -> (f64, u8) {
     match pair {
         // ============ CRYPTO ============
@@ -191,4 +188,3 @@ pub fn get_instrument_config(pair: &str) -> (f64, u8) {
         _ => (0.01, 2),
     }
 }
-

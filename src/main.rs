@@ -1,13 +1,5 @@
-use signals_rthmn::scanner;
-use signals_rthmn::signal;
-use signals_rthmn::types;
-
-use axum::{
-    extract::{ws::{Message, WebSocket, WebSocketUpgrade}, State},
-    response::IntoResponse,
-    routing::get,
-    Json, Router,
-};
+use signals_rthmn::{scanner::MarketScanner, signal::SignalGenerator, types::{BoxData, SignalMessage}};
+use axum::{extract::{ws::{Message, WebSocket, WebSocketUpgrade}, State}, response::IntoResponse, routing::get, Json, Router};
 use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
 use std::{collections::HashMap, env, sync::Arc};
@@ -15,10 +7,6 @@ use tokio::sync::{mpsc, RwLock};
 use tokio_tungstenite::{connect_async, tungstenite::Message as TungMessage};
 use tower_http::cors::{Any, CorsLayer};
 use tracing::{info, warn};
-
-use scanner::MarketScanner;
-use signal::SignalGenerator;
-use types::{BoxData, SignalMessage};
 
 pub struct AppState {
     scanner: RwLock<MarketScanner>,
@@ -42,17 +30,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let server_ws = env::var("SERVER_WS_URL").unwrap_or("ws://localhost:3001/ws".into());
     let auth_token = env::var("SUPABASE_SERVICE_ROLE_KEY").expect("SUPABASE_SERVICE_ROLE_KEY required");
 
-    // Initialize scanner
-    let mut scanner = MarketScanner::new();
+    let mut scanner = MarketScanner::default();
     scanner.initialize();
     info!("MarketScanner initialized with {} paths", scanner.path_count());
 
-    // Channel for signals
     let (signal_tx, signal_rx) = mpsc::channel::<SignalMessage>(1000);
 
     let state = Arc::new(AppState {
         scanner: RwLock::new(scanner),
-        generator: SignalGenerator::new(),
+        generator: SignalGenerator::default(),
         box_data: RwLock::new(HashMap::new()),
         signals_sent: RwLock::new(0),
         server_connected: RwLock::new(false),
@@ -218,69 +204,24 @@ async fn server_client(state: Arc<AppState>, url: String, token: String, mut sig
     }
 }
 
-/// Process incoming box update and scan for signals
 async fn process_box_update(state: &Arc<AppState>, pair: &str, data: &serde_json::Value) {
-    // Parse box data
-    let boxes: Vec<types::Box> = data.get("boxes")
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
-        .unwrap_or_default();
-    
+    let boxes: Vec<signals_rthmn::types::Box> = data.get("boxes").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
     let price = data.get("price").and_then(|v| v.as_f64()).unwrap_or(0.0);
     let timestamp = data.get("timestamp").and_then(|v| v.as_str()).unwrap_or("").to_string();
-
     if boxes.is_empty() { return; }
 
-    // Store box data
-    let box_data = BoxData {
-        pair: pair.to_string(),
-        boxes: boxes.clone(),
-        price,
-        timestamp: timestamp.clone(),
-    };
-    state.box_data.write().await.insert(pair.to_string(), box_data.clone());
+    state.box_data.write().await.insert(pair.to_string(), BoxData { pair: pair.to_string(), boxes: boxes.clone(), price, timestamp });
 
-    // Scan for patterns
-    let patterns = {
-        let scanner = state.scanner.read().await;
-        scanner.detect_patterns(pair, &boxes)
-    };
-
+    let patterns = state.scanner.read().await.detect_patterns(pair, &boxes);
     if patterns.is_empty() { return; }
 
-    // Log pattern detection
-    info!("========== PATTERN DETECTED ==========");
-    info!("{} @ ${:.2} - Found {} pattern(s)", pair, price, patterns.len());
-    for pattern in &patterns {
-        let path_str: Vec<String> = pattern.full_pattern.iter().map(|v| v.to_string()).collect();
-        info!("  Type: {} | Level: {} | Path: [{}]", 
-            pattern.traversal_path.signal_type, 
-            pattern.level,
-            path_str.join(", ")
-        );
-    }
-
-    // Generate signals from patterns
-    let signals = state.generator.generate_signals(pair, &patterns, &boxes, price);
-
-    for signal in &signals {
-        info!("---------- SIGNAL GENERATED ----------");
-        info!("  Pair: {} | Type: {} | Level: {}", signal.pair, signal.signal_type, signal.level);
-        info!("  Pattern: {:?}", signal.pattern_sequence);
-        
-        // Log trade opportunities
-        for trade in &signal.data.trade_opportunities {
-            if trade.is_valid {
-                info!("  Trade [{}]:", trade.rule_id);
-                info!("    Entry:     ${:.2}", trade.entry.unwrap_or(0.0));
-                info!("    Stop:      ${:.2}", trade.stop_loss.unwrap_or(0.0));
-                info!("    Target:    ${:.2}", trade.target.unwrap_or(0.0));
-                if let Some(rr) = trade.risk_reward_ratio {
-                    info!("    R:R Ratio: {:.2}", rr);
-                }
-            }
+    info!("{} @ ${:.2} - {} pattern(s)", pair, price, patterns.len());
+    
+    for signal in state.generator.generate_signals(pair, &patterns, &boxes, price) {
+        info!("SIGNAL: {} {} L{} {:?}", signal.pair, signal.signal_type, signal.level, signal.pattern_sequence);
+        for t in signal.data.trade_opportunities.iter().filter(|t| t.is_valid) {
+            info!("  {} E:{:.2} S:{:.2} T:{:.2} R:R:{:.2}", t.rule_id, t.entry.unwrap_or(0.0), t.stop_loss.unwrap_or(0.0), t.target.unwrap_or(0.0), t.risk_reward_ratio.unwrap_or(0.0));
         }
-        info!("======================================");
-        
-        let _ = state.signal_tx.send(signal.clone()).await;
+        let _ = state.signal_tx.send(signal).await;
     }
 }

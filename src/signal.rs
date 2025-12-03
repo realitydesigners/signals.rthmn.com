@@ -1,10 +1,12 @@
-use crate::types::{Box, BoxDetail, PatternMatch, SignalData, SignalMessage, SignalType, TradeOpportunity};
+use crate::types::{BoxDetail, PatternMatch, SignalData, SignalMessage, SignalType, TradeOpportunity};
 use chrono::Utc;
 
-/// Trade rules configuration
+#[derive(Debug, Clone, Copy)]
+pub enum PricePoint { HIGH, LOW, MID }
+
 #[derive(Debug, Clone)]
 pub struct TradeRule {
-    pub id: String,
+    pub id: &'static str,
     pub level: u32,
     pub entry_box: usize,
     pub entry_point: PricePoint,
@@ -12,175 +14,251 @@ pub struct TradeRule {
     pub stop_point: PricePoint,
     pub target_box: usize,
     pub target_point: PricePoint,
-    pub enabled: bool,
-    pub alert: bool,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub enum PricePoint {
-    HIGH,
-    LOW,
-    MID,
+// ============================================================================
+// TRADE RULES
+// ============================================================================
+// 
+// LEVELS EXPLAINED:
+// A "level" counts how many complete pattern reversals occur in the traversal.
+// 
+// - L1 = 1 reversal  (start key → pattern → end)
+// - L2 = 2 reversals (start → pattern → new key → pattern → end)
+// - L3 = 3 reversals (three complete pattern traversals)
+// - L4 = 4 reversals (four complete pattern traversals)
+// 
+// Each reversal follows the BOXES map: given a starting key (e.g. 267), 
+// look up valid patterns like [-231, 130]. If the live boxes contain that
+// sequence, it's one complete reversal. The last value becomes the new key
+// for the next potential reversal.
+// new tech companies
+// Higher levels = deeper fractal structure = stronger/rarer signals.
+//
+// ============================================================================
+// BOX ORDERING:
+// Boxes are sorted by absolute value descending:
+//   Box 1 = largest (primary direction)
+//   Box 2 = second largest
+//   Box 3 = third largest
+//   etc.
+//
+// ============================================================================
+// LONG RULES (buy setups):
+//   Entry = break above entry_box HIGH
+//   Stop  = entry_box LOW
+//   Target = box 1 HIGH (full move potential)
+//
+// SHORT RULES (sell setups):
+//   Entry = break below entry_box LOW
+//   Stop  = entry_box HIGH
+//   Target = box 1 LOW (full move potential)
+//
+// ACTIVE LEVELS:
+//   L1 → entry/stop at box 2
+//   L2 → entry/stop at box 3
+//   L3 → entry/stop at box 4
+//   L4 → entry/stop at box 5
+//   L5 → entry/stop at box 6
+//   L6 → entry/stop at box 7
+// ============================================================================
+
+const LONG_RULES: &[TradeRule] = &[
+    TradeRule { 
+        id: "L1_RULE_1", 
+        level: 1, 
+        entry_box: 2, 
+        entry_point: PricePoint::HIGH, 
+        stop_box: 2, 
+        stop_point: PricePoint::LOW, 
+        target_box: 1, 
+        target_point: PricePoint::HIGH,
+    },
+    TradeRule { 
+        id: "L2_RULE_1", 
+        level: 2, 
+        entry_box: 3, 
+        entry_point: PricePoint::HIGH, 
+        stop_box: 3, 
+        stop_point: PricePoint::LOW, 
+        target_box: 1, 
+        target_point: PricePoint::HIGH,
+    },
+    TradeRule { 
+        id: "L3_RULE_1", 
+        level: 3, 
+        entry_box: 4, 
+        entry_point: PricePoint::HIGH, 
+        stop_box: 4, 
+        stop_point: PricePoint::LOW, 
+        target_box: 1, 
+        target_point: PricePoint::HIGH,
+    },
+    TradeRule { 
+        id: "L4_RULE_1", 
+        level: 4, 
+        entry_box: 5, 
+        entry_point: PricePoint::HIGH, 
+        stop_box: 5, 
+        stop_point: PricePoint::LOW, 
+        target_box: 1, 
+        target_point: PricePoint::HIGH,
+    },
+    TradeRule { 
+        id: "L5_RULE_1", 
+        level: 5, 
+        entry_box: 6, 
+        entry_point: PricePoint::HIGH, 
+        stop_box: 6, 
+        stop_point: PricePoint::LOW, 
+        target_box: 1, 
+        target_point: PricePoint::HIGH,
+    },
+    TradeRule { 
+        id: "L6_RULE_1", 
+        level: 6, 
+        entry_box: 7, 
+        entry_point: PricePoint::HIGH, 
+        stop_box: 7, 
+        stop_point: PricePoint::LOW, 
+        target_box: 1, 
+        target_point: PricePoint::HIGH,
+    },
+];
+
+const SHORT_RULES: &[TradeRule] = &[
+    TradeRule { 
+        id: "L1_RULE_1", 
+        level: 1, 
+        entry_box: 2, 
+        entry_point: PricePoint::LOW, 
+        stop_box: 2, 
+        stop_point: PricePoint::HIGH, 
+        target_box: 1, 
+        target_point: PricePoint::LOW,
+    },
+    TradeRule { 
+        id: "L2_RULE_1", 
+        level: 2, 
+        entry_box: 3, 
+        entry_point: PricePoint::LOW, 
+        stop_box: 3, 
+        stop_point: PricePoint::HIGH, 
+        target_box: 1, 
+        target_point: PricePoint::LOW,
+    },
+    TradeRule { 
+        id: "L3_RULE_1", 
+        level: 3, 
+        entry_box: 4, 
+        entry_point: PricePoint::LOW, 
+        stop_box: 4, 
+        stop_point: PricePoint::HIGH, 
+        target_box: 1, 
+        target_point: PricePoint::LOW,
+    },
+    TradeRule { 
+        id: "L4_RULE_1", 
+        level: 4, 
+        entry_box: 5, 
+        entry_point: PricePoint::LOW, 
+        stop_box: 5, 
+        stop_point: PricePoint::HIGH, 
+        target_box: 1, 
+        target_point: PricePoint::LOW,
+    },
+    TradeRule { 
+        id: "L5_RULE_1", 
+        level: 5, 
+        entry_box: 6, 
+        entry_point: PricePoint::LOW, 
+        stop_box: 6, 
+        stop_point: PricePoint::HIGH, 
+        target_box: 1, 
+        target_point: PricePoint::LOW,
+    },
+    TradeRule { 
+        id: "L6_RULE_1", 
+        level: 6, 
+        entry_box: 7, 
+        entry_point: PricePoint::LOW, 
+        stop_box: 7, 
+        stop_point: PricePoint::HIGH, 
+        target_box: 1, 
+        target_point: PricePoint::LOW,
+    },
+];
+
+fn get_rules(signal_type: SignalType) -> &'static [TradeRule] {
+    match signal_type { SignalType::LONG => LONG_RULES, SignalType::SHORT => SHORT_RULES }
 }
 
-lazy_static::lazy_static! {
-    static ref LONG_RULES: Vec<TradeRule> = vec![
-        TradeRule { id: "L1_RULE_1".into(), level: 1, entry_box: 2, entry_point: PricePoint::HIGH, stop_box: 2, stop_point: PricePoint::LOW, target_box: 1, target_point: PricePoint::HIGH, enabled: true, alert: true },
-        TradeRule { id: "L3_RULE_1".into(), level: 3, entry_box: 4, entry_point: PricePoint::HIGH, stop_box: 4, stop_point: PricePoint::LOW, target_box: 1, target_point: PricePoint::HIGH, enabled: true, alert: true },
-        TradeRule { id: "L4_RULE_1".into(), level: 4, entry_box: 5, entry_point: PricePoint::HIGH, stop_box: 5, stop_point: PricePoint::LOW, target_box: 1, target_point: PricePoint::HIGH, enabled: true, alert: true },
-    ];
-    
-    static ref SHORT_RULES: Vec<TradeRule> = vec![
-        TradeRule { id: "L1_RULE_1".into(), level: 1, entry_box: 2, entry_point: PricePoint::LOW, stop_box: 2, stop_point: PricePoint::HIGH, target_box: 1, target_point: PricePoint::LOW, enabled: true, alert: true },
-        TradeRule { id: "L3_RULE_1".into(), level: 3, entry_box: 4, entry_point: PricePoint::LOW, stop_box: 4, stop_point: PricePoint::HIGH, target_box: 1, target_point: PricePoint::LOW, enabled: true, alert: true },
-        TradeRule { id: "L4_RULE_1".into(), level: 4, entry_box: 5, entry_point: PricePoint::LOW, stop_box: 5, stop_point: PricePoint::HIGH, target_box: 1, target_point: PricePoint::LOW, enabled: true, alert: true },
-    ];
-}
-
-/// SignalGenerator - Generates trading signals from pattern matches
-pub struct SignalGenerator {}
+#[derive(Default)]
+pub struct SignalGenerator;
 
 impl SignalGenerator {
-    pub fn new() -> Self {
-        Self {}
+    pub fn generate_signals(&self, pair: &str, patterns: &[PatternMatch], _boxes: &[crate::types::Box], _price: f64) -> Vec<SignalMessage> {
+        patterns.iter()
+            .filter(|p| get_rules(p.traversal_path.signal_type).iter().any(|r| r.level == p.level))
+            .map(|p| self.create_signal(pair, p))
+            .collect()
     }
 
-    pub fn generate_signals(
-        &self,
-        pair: &str,
-        patterns: &[PatternMatch],
-        boxes: &[Box],
-        price: f64,
-    ) -> Vec<SignalMessage> {
-        let mut signals = Vec::new();
-
-        for pattern in patterns {
-            // Check if this level should alert
-            if !self.should_alert(pattern.level, &pattern.traversal_path.signal_type) {
-                continue;
-            }
-
-            let signal = self.create_signal(pair, pattern, boxes, price);
-            signals.push(signal);
-        }
-
-        signals
-    }
-
-    fn should_alert(&self, level: u32, signal_type: &SignalType) -> bool {
-        let rules = match signal_type {
-            SignalType::LONG => &*LONG_RULES,
-            SignalType::SHORT => &*SHORT_RULES,
-        };
-        rules.iter().any(|r| r.level == level && r.alert)
-    }
-
-    fn create_signal(
-        &self,
-        pair: &str,
-        pattern: &PatternMatch,
-        boxes: &[Box],
-        _price: f64,
-    ) -> SignalMessage {
-        let signal_id = format!(
-            "{}_{}_{}_{}_L{}",
-            pair,
-            pattern.traversal_path.signal_type,
-            pattern.traversal_path.path.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("_"),
-            pattern.level,
-            Utc::now().timestamp_millis()
-        );
-
-        let custom_pattern = pattern.full_pattern
-            .iter()
-            .map(|&n| if n > 0 { "1" } else { "0" })
-            .collect::<Vec<_>>()
-            .join("");
-
-        // Get trade opportunities
-        let trade_opportunities = self.calculate_trade_opportunities(pattern, boxes);
-
+    fn create_signal(&self, pair: &str, pattern: &PatternMatch) -> SignalMessage {
+        let now = Utc::now().timestamp_millis();
+        let path_str = pattern.traversal_path.path.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("_");
+        
         SignalMessage {
-            signal_id,
+            signal_id: format!("{}_{}_{}_{}_{}", pair, pattern.traversal_path.signal_type, path_str, pattern.level, now),
             pair: pair.to_string(),
             signal_type: pattern.traversal_path.signal_type.to_string(),
             level: pattern.level,
-            custom_pattern: Some(custom_pattern),
+            custom_pattern: Some(pattern.full_pattern.iter().map(|&n| if n > 0 { '1' } else { '0' }).collect()),
             pattern_sequence: pattern.traversal_path.path.clone(),
-            timestamp: Utc::now().timestamp_millis(),
+            timestamp: now,
             data: SignalData {
                 box_details: pattern.box_details.clone(),
-                trade_opportunities,
+                trade_opportunities: self.calculate_opportunities(pattern),
                 complete_box_snapshot: pattern.full_pattern.clone(),
                 has_trade_rules: true,
             },
         }
     }
 
-    fn calculate_trade_opportunities(
-        &self,
-        pattern: &PatternMatch,
-        _boxes: &[Box],
-    ) -> Vec<TradeOpportunity> {
-        let rules = match pattern.traversal_path.signal_type {
-            SignalType::LONG => &*LONG_RULES,
-            SignalType::SHORT => &*SHORT_RULES,
-        };
-
-        let active_rules: Vec<&TradeRule> = rules
-            .iter()
-            .filter(|r| r.level == pattern.level && r.enabled)
+    fn calculate_opportunities(&self, pattern: &PatternMatch) -> Vec<TradeOpportunity> {
+        let sig_type = pattern.traversal_path.signal_type;
+        let mut primary: Vec<&BoxDetail> = pattern.box_details.iter()
+            .filter(|b| matches!(sig_type, SignalType::LONG if b.integer_value > 0) || matches!(sig_type, SignalType::SHORT if b.integer_value < 0))
             .collect();
+        primary.sort_by(|a, b| b.integer_value.abs().cmp(&a.integer_value.abs()));
 
-        // Get primary boxes (same direction as signal)
-        let primary_boxes: Vec<&BoxDetail> = pattern.box_details
-            .iter()
-            .filter(|b| match pattern.traversal_path.signal_type {
-                SignalType::LONG => b.integer_value > 0,
-                SignalType::SHORT => b.integer_value < 0,
+        get_rules(sig_type).iter()
+            .filter(|r| r.level == pattern.level)
+            .map(|rule| {
+                let entry = get_price(&primary, rule.entry_box, rule.entry_point);
+                let stop = get_price(&primary, rule.stop_box, rule.stop_point);
+                let target = get_price(&primary, rule.target_box, rule.target_point);
+                let rr = entry.zip(stop).zip(target).and_then(|((e, s), t)| {
+                    let risk = (e - s).abs();
+                    (risk > 0.0).then(|| (t - e).abs() / risk)
+                });
+                TradeOpportunity {
+                    rule_id: rule.id.to_string(),
+                    level: rule.level,
+                    entry, stop_loss: stop, target,
+                    risk_reward_ratio: rr,
+                    is_valid: entry.is_some() && stop.is_some() && target.is_some(),
+                }
             })
-            .collect();
-
-        let mut opportunities = Vec::new();
-
-        for rule in active_rules {
-            let entry = self.get_price(&primary_boxes, rule.entry_box, rule.entry_point);
-            let stop_loss = self.get_price(&primary_boxes, rule.stop_box, rule.stop_point);
-            let target = self.get_price(&primary_boxes, rule.target_box, rule.target_point);
-
-            let risk_reward = if let (Some(e), Some(s), Some(t)) = (entry, stop_loss, target) {
-                let risk = (e - s).abs();
-                let reward = (t - e).abs();
-                if risk > 0.0 { Some(reward / risk) } else { None }
-            } else {
-                None
-            };
-
-            opportunities.push(TradeOpportunity {
-                rule_id: rule.id.clone(),
-                level: rule.level,
-                entry,
-                stop_loss,
-                target,
-                risk_reward_ratio: risk_reward,
-                is_valid: entry.is_some() && stop_loss.is_some() && target.is_some(),
-            });
-        }
-
-        opportunities
+            .collect()
     }
+}
 
-    fn get_price(&self, boxes: &[&BoxDetail], box_index: usize, point: PricePoint) -> Option<f64> {
-        // Sort by absolute value descending
-        let mut sorted = boxes.to_vec();
-        sorted.sort_by(|a, b| b.integer_value.abs().cmp(&a.integer_value.abs()));
-
-        let idx = box_index.saturating_sub(1);
-        sorted.get(idx).map(|b| match point {
-            PricePoint::HIGH => b.high,
-            PricePoint::LOW => b.low,
-            PricePoint::MID => (b.high + b.low) / 2.0,
-        })
-    }
+fn get_price(boxes: &[&BoxDetail], idx: usize, point: PricePoint) -> Option<f64> {
+    boxes.get(idx.saturating_sub(1)).map(|b| match point {
+        PricePoint::HIGH => b.high,
+        PricePoint::LOW => b.low,
+        PricePoint::MID => (b.high + b.low) / 2.0,
+    })
 }
 

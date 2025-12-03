@@ -103,14 +103,40 @@ The first number in the path determines the signal type:
 
 ### Step 5: Calculate Level
 
-The "level" measures how deep the pattern goes through the box structure.
+A **level** counts how many complete pattern **reversals** occur in the traversal.
 
-- Level 1: Simple pattern
-- Level 2: Pattern continues one step deeper
-- Level 3: Pattern continues two steps deeper
-- Level 4+: Very deep, rare pattern
+Each reversal works like this:
+1. Start at a key (e.g. 267)
+2. Look up BOXES[267] to get valid patterns like `[-231, 130]`
+3. Check if the live boxes contain that exact sequence
+4. If yes → that's **one complete reversal**
+5. The last value (130) becomes the new key
+6. Repeat from step 2 with the new key
 
-Higher levels = stronger signals (but rarer)
+**Level Examples:**
+
+```
+L1 = 1 reversal
+  Path: [267, -231, 130]
+  - Start at 267
+  - BOXES[267] contains [-231, 130]
+  - Live data has [-231, 130] → 1 reversal complete
+  - End at 130, no more patterns match → Level 1
+
+L2 = 2 reversals  
+  Path: [267, -231, 130, -112, 63]
+  - Start at 267 → match [-231, 130] → reversal 1
+  - Continue at 130 → match [-112, 63] → reversal 2
+  - End → Level 2
+
+L3 = 3 reversals
+  - Three complete pattern traversals from start to end
+
+L4 = 4 reversals
+  - Four complete pattern traversals (rare, deep structure)
+```
+
+**Higher levels = deeper fractal structure = stronger but rarer signals**
 
 ### Step 6: Check Alert Rules
 
