@@ -10,3 +10,5 @@ target/
 
 # Logs
 *.log
+
+paths_output.txt

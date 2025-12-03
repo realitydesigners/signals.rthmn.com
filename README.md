@@ -14,11 +14,15 @@ boxes.rthmn.com --> signals.rthmn.com --> server.rthmn.com --> Users
 ```
 src/
   main.rs        - Entry point, WebSocket server/client
+  lib.rs         - Library exports for tests
   scanner.rs     - Pattern detection (MarketScanner)
   signal.rs      - Signal generation (SignalGenerator)
   patterns.rs    - Box traversal patterns
   instruments.rs - Trading pair configs (point, digits)
   types.rs       - Data structures
+
+tests/
+  patterns_test.rs - Tests for patterns.rs
 ```
 
 ---
@@ -182,6 +186,21 @@ cargo run --release
 | GET /health     | Health check                        |
 | GET /api/status | Scanner stats                       |
 | WS /ws          | Receives boxes from boxes.rthmn.com |
+
+## Testing
+
+```bash
+# Run all tests
+cargo test
+
+# Run patterns tests
+cargo test --test patterns_test
+
+# Generate paths output file
+cargo test --test patterns_test test_generate_all_paths -- --nocapture
+```
+
+Output: `paths_output.txt` - All traversal paths (1,506,648 paths)
 
 ## Deploy (Railway)
 

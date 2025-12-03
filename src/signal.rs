@@ -38,13 +38,11 @@ lazy_static::lazy_static! {
 }
 
 /// SignalGenerator - Generates trading signals from pattern matches
-pub struct SignalGenerator {
-    signals_generated: u64,
-}
+pub struct SignalGenerator {}
 
 impl SignalGenerator {
     pub fn new() -> Self {
-        Self { signals_generated: 0 }
+        Self {}
     }
 
     pub fn generate_signals(
@@ -82,7 +80,7 @@ impl SignalGenerator {
         pair: &str,
         pattern: &PatternMatch,
         boxes: &[Box],
-        price: f64,
+        _price: f64,
     ) -> SignalMessage {
         let signal_id = format!(
             "{}_{}_{}_{}_L{}",
@@ -122,7 +120,7 @@ impl SignalGenerator {
     fn calculate_trade_opportunities(
         &self,
         pattern: &PatternMatch,
-        boxes: &[Box],
+        _boxes: &[Box],
     ) -> Vec<TradeOpportunity> {
         let rules = match pattern.traversal_path.signal_type {
             SignalType::LONG => &*LONG_RULES,

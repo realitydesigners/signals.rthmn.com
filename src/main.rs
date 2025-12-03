@@ -1,8 +1,6 @@
-mod instruments;
-mod patterns;
-mod scanner;
-mod signal;
-mod types;
+use signals_rthmn::scanner;
+use signals_rthmn::signal;
+use signals_rthmn::types;
 
 use axum::{
     extract::{ws::{Message, WebSocket, WebSocketUpgrade}, State},
@@ -16,7 +14,7 @@ use std::{collections::HashMap, env, sync::Arc};
 use tokio::sync::{mpsc, RwLock};
 use tokio_tungstenite::{connect_async, tungstenite::Message as TungMessage};
 use tower_http::cors::{Any, CorsLayer};
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 use scanner::MarketScanner;
 use signal::SignalGenerator;
@@ -249,10 +247,40 @@ async fn process_box_update(state: &Arc<AppState>, pair: &str, data: &serde_json
 
     if patterns.is_empty() { return; }
 
+    // Log pattern detection
+    info!("========== PATTERN DETECTED ==========");
+    info!("{} @ ${:.2} - Found {} pattern(s)", pair, price, patterns.len());
+    for pattern in &patterns {
+        let path_str: Vec<String> = pattern.full_pattern.iter().map(|v| v.to_string()).collect();
+        info!("  Type: {} | Level: {} | Path: [{}]", 
+            pattern.traversal_path.signal_type, 
+            pattern.level,
+            path_str.join(", ")
+        );
+    }
+
     // Generate signals from patterns
     let signals = state.generator.generate_signals(pair, &patterns, &boxes, price);
 
-    for signal in signals {
-        let _ = state.signal_tx.send(signal).await;
+    for signal in &signals {
+        info!("---------- SIGNAL GENERATED ----------");
+        info!("  Pair: {} | Type: {} | Level: {}", signal.pair, signal.signal_type, signal.level);
+        info!("  Pattern: {:?}", signal.pattern_sequence);
+        
+        // Log trade opportunities
+        for trade in &signal.data.trade_opportunities {
+            if trade.is_valid {
+                info!("  Trade [{}]:", trade.rule_id);
+                info!("    Entry:     ${:.2}", trade.entry.unwrap_or(0.0));
+                info!("    Stop:      ${:.2}", trade.stop_loss.unwrap_or(0.0));
+                info!("    Target:    ${:.2}", trade.target.unwrap_or(0.0));
+                if let Some(rr) = trade.risk_reward_ratio {
+                    info!("    R:R Ratio: {:.2}", rr);
+                }
+            }
+        }
+        info!("======================================");
+        
+        let _ = state.signal_tx.send(signal.clone()).await;
     }
 }

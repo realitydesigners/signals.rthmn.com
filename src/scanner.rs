@@ -6,14 +6,12 @@ use std::collections::HashSet;
 /// MarketScanner - Detects trading patterns from live box data
 pub struct MarketScanner {
     all_paths: Vec<TraversalPath>,
-    last_hashes: std::collections::HashMap<String, String>,
 }
 
 impl MarketScanner {
     pub fn new() -> Self {
         Self {
             all_paths: Vec::new(),
-            last_hashes: std::collections::HashMap::new(),
         }
     }
 
@@ -99,9 +97,6 @@ impl MarketScanner {
             .collect();
         let value_set: HashSet<i32> = integer_values.iter().copied().collect();
 
-        // Check hash to avoid reprocessing same data
-        let hash = integer_values.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",");
-        // Note: We can't use mutable self here, so deduplication should be done at caller level
 
         let mut matches = Vec::new();
 
@@ -137,7 +132,7 @@ impl MarketScanner {
         traversal: &TraversalPath,
         boxes: &[Box],
         integer_values: &[i32],
-        point: f64,
+        _point: f64,
     ) -> PatternMatch {
         let level = self.calculate_level(&traversal.path);
         
