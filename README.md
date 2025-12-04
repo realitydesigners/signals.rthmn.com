@@ -1,13 +1,19 @@
 # signals.rthmn.com
 
-Signal detection microservice in Rust.
+Signal detection microservice in Rust with gRPC.
 
 ## Architecture
 
 ```
-boxes.rthmn.com --> signals.rthmn.com --> server.rthmn.com --> Users
-     (boxes)           (scanning)           (broadcast)
+boxes.rthmn.com  ──gRPC──>  signals.rthmn.com  ──gRPC──>  server.rthmn.com  ──WS──>  Users
+     (boxes)                    (scanning)                   (broadcast)
 ```
+
+## Protocol
+
+- **Inbound**: gRPC `BoxService.StreamBoxes` from boxes.rthmn.com (port 50051)
+- **Outbound**: gRPC `SignalService.StreamSignals` to server.rthmn.com
+- **HTTP**: Health checks on port 3003
 
 ## Files
 
@@ -194,9 +200,9 @@ The signal is sent to server.rthmn.com which broadcasts to users.
 
 ```bash
 # Create .env file
-SUPABASE_SERVICE_ROLE_KEY=your_key
-SERVER_WS_URL=wss://server.rthmn.com/ws
 PORT=3003
+GRPC_PORT=50051
+SERVER_GRPC_URL=http://server.rthmn.com:50052
 ```
 
 ## Run
@@ -207,11 +213,11 @@ cargo run --release
 
 ## API
 
-| Endpoint        | Description                         |
-| --------------- | ----------------------------------- |
-| GET /health     | Health check                        |
-| GET /api/status | Scanner stats                       |
-| WS /ws          | Receives boxes from boxes.rthmn.com |
+| Endpoint        | Description                  |
+| --------------- | ---------------------------- |
+| GET /health     | Health check                 |
+| GET /api/status | Scanner stats                |
+| gRPC :50051     | BoxService (from boxes)      |
 
 ## Testing
 

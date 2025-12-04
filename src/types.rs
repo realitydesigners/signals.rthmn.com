@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Box { pub high: f64, pub low: f64, pub value: f64 }
+pub struct ResoBox { pub high: f64, pub low: f64, pub value: f64 }
 
 #[derive(Debug, Clone)]
-pub struct BoxData { pub pair: String, pub boxes: Vec<Box>, pub price: f64, pub timestamp: String }
+pub struct BoxData { pub pair: String, pub boxes: Vec<ResoBox>, pub price: f64, pub timestamp: String }
 
 #[derive(Debug, Clone)]
 pub struct TraversalPath { pub path: Vec<i32>, pub length: usize, pub starting_point: i32, pub signal_type: SignalType }

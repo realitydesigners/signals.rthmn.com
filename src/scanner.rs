@@ -1,6 +1,6 @@
 use crate::instruments::get_instrument_config;
 use crate::patterns::{BOXES, STARTING_POINTS};
-use crate::types::{Box, BoxDetail, PatternMatch, SignalType, TraversalPath};
+use crate::types::{ResoBox, BoxDetail, PatternMatch, SignalType, TraversalPath};
 use std::collections::HashSet;
 
 #[derive(Default)]
@@ -62,7 +62,7 @@ impl MarketScanner {
         self.all_paths.len()
     }
 
-    pub fn detect_patterns(&self, pair: &str, boxes: &[Box]) -> Vec<PatternMatch> {
+    pub fn detect_patterns(&self, pair: &str, boxes: &[ResoBox]) -> Vec<PatternMatch> {
         if boxes.is_empty() { return vec![]; }
 
         let (point, _) = get_instrument_config(pair);
@@ -79,7 +79,7 @@ impl MarketScanner {
             .collect()
     }
 
-    fn create_pattern_match(&self, pair: &str, traversal: &TraversalPath, boxes: &[Box], integer_values: &[i32]) -> PatternMatch {
+    fn create_pattern_match(&self, pair: &str, traversal: &TraversalPath, boxes: &[ResoBox], integer_values: &[i32]) -> PatternMatch {
         let box_details: Vec<BoxDetail> = traversal.path.iter()
             .filter_map(|&path_value| {
                 integer_values.iter().position(|&v| v == path_value).map(|i| BoxDetail {

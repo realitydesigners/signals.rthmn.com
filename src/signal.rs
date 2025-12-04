@@ -197,7 +197,7 @@ fn get_rules(signal_type: SignalType) -> &'static [TradeRule] {
 pub struct SignalGenerator;
 
 impl SignalGenerator {
-    pub fn generate_signals(&self, pair: &str, patterns: &[PatternMatch], _boxes: &[crate::types::Box], _price: f64) -> Vec<SignalMessage> {
+    pub fn generate_signals(&self, pair: &str, patterns: &[PatternMatch], _boxes: &[crate::types::ResoBox], _price: f64) -> Vec<SignalMessage> {
         patterns.iter()
             .filter(|p| get_rules(p.traversal_path.signal_type).iter().any(|r| r.level == p.level))
             .map(|p| self.create_signal(pair, p))

@@ -1,0 +1,88 @@
+syntax = "proto3";
+
+package rthmn;
+
+// =============================================================================
+// COMMON TYPES
+// =============================================================================
+
+message Box {
+  double high = 1;
+  double low = 2;
+  double value = 3;
+}
+
+message BoxUpdate {
+  string pair = 1;
+  double price = 2;
+  string timestamp = 3;
+  repeated Box boxes = 4;
+}
+
+message BoxDetail {
+  int32 integer_value = 1;
+  double high = 2;
+  double low = 3;
+  double value = 4;
+}
+
+message TradeOpportunity {
+  string rule_id = 1;
+  uint32 level = 2;
+  optional double entry = 3;
+  optional double stop_loss = 4;
+  optional double target = 5;
+  optional double risk_reward_ratio = 6;
+  bool is_valid = 7;
+}
+
+message SignalData {
+  repeated BoxDetail box_details = 1;
+  repeated TradeOpportunity trade_opportunities = 2;
+  repeated int32 complete_box_snapshot = 3;
+  bool has_trade_rules = 4;
+}
+
+message Signal {
+  string signal_id = 1;
+  string pair = 2;
+  string signal_type = 3;
+  uint32 level = 4;
+  optional string custom_pattern = 5;
+  repeated int32 pattern_sequence = 6;
+  int64 timestamp = 7;
+  SignalData data = 8;
+}
+
+message Ack {
+  bool success = 1;
+  optional string message = 2;
+}
+
+// =============================================================================
+// BOX SERVICE - boxes.rthmn.com -> signals.rthmn.com
+// =============================================================================
+
+service BoxService {
+  // Stream box updates from boxes to signals
+  rpc StreamBoxes(stream BoxUpdate) returns (Ack);
+}
+
+// =============================================================================
+// SIGNAL SERVICE - signals.rthmn.com -> server.rthmn.com
+// =============================================================================
+
+service SignalService {
+  // Stream signals from signals to server
+  rpc StreamSignals(stream Signal) returns (Ack);
+}
+
+// =============================================================================
+// MARKET SERVICE - boxes.rthmn.com -> server.rthmn.com
+// =============================================================================
+
+service MarketService {
+  // Stream box updates from boxes to server (for client broadcast)
+  rpc StreamMarketData(stream BoxUpdate) returns (Ack);
+}
+
