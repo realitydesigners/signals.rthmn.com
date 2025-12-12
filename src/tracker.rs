@@ -161,15 +161,6 @@ impl SignalTracker {
             {
                 tracing::warn!("[Tracker] Failed to settle signal in Supabase: {}", e);
             }
-
-            // Push notifications for subscribers (best-effort)
-            if let Err(e) = self
-                .supabase
-                .push_signal_closed(&settlement.signal.signal_id, &settlement.signal.pair, settlement.status)
-                .await
-            {
-                tracing::warn!("[Tracker] Failed to push notifications: {}", e);
-            }
         }
 
         settlements
