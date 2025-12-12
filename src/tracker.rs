@@ -149,10 +149,14 @@ impl SignalTracker {
 
         // Process each settlement (update Supabase only)
         for settlement in &settlements {
-            // Update Supabase status (active → failed/success). Do not change subscribers.
+            // Update Supabase status with settlement price and timestamp
             if let Err(e) = self
                 .supabase
-                .update_signal_status(&settlement.signal.signal_id, settlement.status)
+                .update_signal_status(
+                    &settlement.signal.signal_id,
+                    settlement.status,
+                    settlement.settled_price,
+                )
                 .await
             {
                 tracing::warn!("[Tracker] Failed to settle signal in Supabase: {}", e);

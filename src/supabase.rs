@@ -15,27 +15,25 @@ pub struct SupabaseClient {
 
 #[derive(Serialize)]
 struct NewSignalLegacy {
-    // identifiers
     signal_id: String,
     pair: String,
     signal_type: String,
     level: i32,
-
-    // existing signals table columns (your current schema)
     pattern_sequence: Vec<i32>,
     entry: f64,
     stop_loss: f64,
     target: f64,
+    risk_reward_ratio: Option<f64>,
     status: String,
     timestamp: String,
-
-    // explicit null
     subscribers: JsonValue,
 }
 
 #[derive(Serialize)]
-struct UpdateSignalStatus {
+struct UpdateSignalSettlement {
     status: String,
+    settled_price: f64,
+    settled_at: String,
 }
 
 #[derive(Deserialize)]
@@ -69,8 +67,6 @@ impl SupabaseClient {
         let created_at_dt =
             DateTime::from_timestamp_millis(signal.created_at).unwrap_or_else(Utc::now);
 
-        // NOTE: Your Supabase `signals` table does NOT have entry_price/take_profit/updated_at.
-        // Use the existing schema: entry/stop_loss/target/status/timestamp/subscribers.
         let payload = NewSignalLegacy {
             signal_id: signal.signal_id.clone(),
             pair: signal.pair.clone(),
@@ -80,6 +76,7 @@ impl SupabaseClient {
             entry: signal.entry,
             stop_loss: signal.stop_loss,
             target: signal.target,
+            risk_reward_ratio: signal.risk_reward_ratio,
             status: "active".to_string(),
             timestamp: created_at_dt.to_rfc3339(),
             subscribers: JsonValue::Null,
@@ -113,14 +110,17 @@ impl SupabaseClient {
         Ok(())
     }
 
-    /// Update signal status. Does NOT touch subscribers.
+    /// Update signal status with settlement details
     pub async fn update_signal_status(
         &self,
         signal_id: &str,
         status: &str,
+        settled_price: f64,
     ) -> Result<(), reqwest::Error> {
-        let update = UpdateSignalStatus {
+        let update = UpdateSignalSettlement {
             status: status.to_string(),
+            settled_price,
+            settled_at: Utc::now().to_rfc3339(),
         };
 
         let response = self
@@ -137,14 +137,14 @@ impl SupabaseClient {
 
         if response.status().is_success() {
             info!(
-                "[Supabase] Updated signal {} status -> {}",
-                signal_id, status
+                "[Supabase] Settled signal {} -> {} @ {:.5}",
+                signal_id, status, settled_price
             );
         } else {
             let status_code = response.status();
             let body = response.text().await.unwrap_or_default();
             warn!(
-                "[Supabase] Failed to update status for signal {}: {} - {}",
+                "[Supabase] Failed to settle signal {}: {} - {}",
                 signal_id, status_code, body
             );
         }
