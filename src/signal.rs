@@ -213,7 +213,6 @@ impl SignalGenerator {
             pair: pair.to_string(),
             signal_type: pattern.traversal_path.signal_type.to_string(),
             level: pattern.level,
-            custom_pattern: Some(pattern.full_pattern.iter().map(|&n| if n > 0 { '1' } else { '0' }).collect()),
             pattern_sequence: pattern.traversal_path.path.clone(),
             timestamp: now,
             data: SignalData {

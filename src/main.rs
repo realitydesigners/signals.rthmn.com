@@ -1,56 +1,89 @@
-use signals_rthmn::{scanner::MarketScanner, signal::SignalGenerator, types::{BoxData, SignalMessage}};
-use axum::{extract::{ws::{Message, WebSocket, WebSocketUpgrade}, State}, response::IntoResponse, routing::get, Json, Router};
+use signals_rthmn::{
+    scanner::MarketScanner,
+    signal::SignalGenerator,
+    supabase::SupabaseClient,
+    tracker::{ActiveSignal, SignalTracker},
+    types::{BoxData, SignalMessage, SignalType},
+};
+use axum::{
+    extract::{
+        ws::{Message, WebSocket, WebSocketUpgrade},
+        State,
+    },
+    response::IntoResponse,
+    routing::get,
+    Json, Router,
+};
 use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
 use std::{collections::HashMap, env, sync::Arc};
 use tokio::sync::{mpsc, RwLock};
-use tokio_tungstenite::{connect_async, tungstenite::Message as TungMessage};
 use tower_http::cors::{Any, CorsLayer};
 use tracing::{info, warn};
-
-const HEARTBEAT_SECS: u64 = 30;
 
 pub struct AppState {
     scanner: RwLock<MarketScanner>,
     generator: SignalGenerator,
+    tracker: SignalTracker,
     box_data: RwLock<HashMap<String, BoxData>>,
     signals_sent: RwLock<u64>,
-    server_connected: RwLock<bool>,
+    main_server_url: String,
     signal_tx: mpsc::Sender<SignalMessage>,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt().with_env_filter("signals_rthmn=info").init();
+    tracing_subscriber::fmt()
+        .with_env_filter("signals_rthmn=info")
+        .init();
     dotenvy::dotenv().ok();
 
     info!("==================================================");
     info!("  SIGNALS.RTHMN.COM - Rust Edition");
+    info!("  Supabase-only signals + server-side matching");
     info!("==================================================");
 
-    let port: u16 = env::var("PORT").unwrap_or("3003".into()).parse().unwrap_or(3003);
-    let server_ws = env::var("SERVER_WS_URL").unwrap_or("ws://localhost:3001/ws".into());
+    let port: u16 = env::var("PORT")
+        .unwrap_or("3003".into())
+        .parse()
+        .unwrap_or(3003);
+    let main_server_url =
+        env::var("MAIN_SERVER_URL").unwrap_or("https://server.rthmn.com".into());
     let auth_token = env::var("SUPABASE_SERVICE_ROLE_KEY").expect("SUPABASE_SERVICE_ROLE_KEY required");
 
+    // Supabase configuration
+    let supabase_url = env::var("SUPABASE_URL").expect("SUPABASE_URL required");
+    let supabase_key = auth_token.clone();
+
+    info!("Supabase URL: {}", supabase_url);
+    info!("Main server URL: {}", main_server_url);
+
+    // Initialize scanner
     let mut scanner = MarketScanner::default();
     scanner.initialize();
     info!("MarketScanner initialized with {} paths", scanner.path_count());
+
+    // Initialize clients
+    let supabase = SupabaseClient::new(&supabase_url, &supabase_key);
+    let tracker = SignalTracker::new(supabase);
+    info!("SignalTracker initialized");
 
     let (signal_tx, signal_rx) = mpsc::channel::<SignalMessage>(1000);
 
     let state = Arc::new(AppState {
         scanner: RwLock::new(scanner),
         generator: SignalGenerator::default(),
+        tracker,
         box_data: RwLock::new(HashMap::new()),
         signals_sent: RwLock::new(0),
-        server_connected: RwLock::new(false),
+        main_server_url,
         signal_tx,
     });
 
-    // Connect to server.rthmn.com to send signals
+    // HTTP client that forwards raw signals to main server immediately
     let s = Arc::clone(&state);
     tokio::spawn(async move {
-        server_client(s, server_ws, auth_token, signal_rx).await;
+        main_server_forwarder(s, auth_token, signal_rx).await;
     });
 
     // HTTP + WebSocket server
@@ -58,7 +91,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/health", get(health))
         .route("/api/status", get(status))
         .route("/ws", get(ws_handler))
-        .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any))
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods(Any)
+                .allow_headers(Any),
+        )
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
@@ -78,19 +116,27 @@ async fn health() -> Json<serde_json::Value> {
 async fn status(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let scanner = s.scanner.read().await;
     let signals = *s.signals_sent.read().await;
-    let server_conn = *s.server_connected.read().await;
+    let active_signals = s.tracker.get_active_count().await;
+    let active_by_pair = s.tracker.get_active_by_pair().await;
+
     Json(serde_json::json!({
         "scanner": {
             "totalPaths": scanner.path_count(),
             "isInitialized": true
         },
         "signalsSent": signals,
-        "serverConnected": server_conn
+        "activeSignals": {
+            "total": active_signals,
+            "byPair": active_by_pair
+        }
     }))
 }
 
 /// WebSocket handler - receives box updates from boxes.rthmn.com
-async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn ws_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
     ws.on_upgrade(|socket| handle_socket(socket, state))
 }
 
@@ -100,7 +146,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
 
     // Send auth required
     let auth_msg = rmp_serde::to_vec(&serde_json::json!({"type": "authRequired"})).unwrap();
-    let _ = sender.send(Message::Binary(auth_msg)).await;
+    let _ = sender.send(Message::Binary(auth_msg.into())).await;
 
     let mut authenticated = false;
 
@@ -112,15 +158,15 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                         Some("auth") => {
                             // Accept any auth for now (boxes.rthmn.com uses service key)
                             authenticated = true;
-                            let welcome = rmp_serde::to_vec(&serde_json::json!({"type": "welcome"})).unwrap();
-                            let _ = sender.send(Message::Binary(welcome)).await;
+                            let welcome =
+                                rmp_serde::to_vec(&serde_json::json!({"type": "welcome"})).unwrap();
+                            let _ = sender.send(Message::Binary(welcome.into())).await;
                             info!("boxes.rthmn.com authenticated");
                         }
                         Some("boxUpdate") if authenticated => {
-                            if let (Some(pair), Some(data)) = (
-                                m.get("pair").and_then(|v| v.as_str()),
-                                m.get("data")
-                            ) {
+                            if let (Some(pair), Some(data)) =
+                                (m.get("pair").and_then(|v| v.as_str()), m.get("data"))
+                            {
                                 process_box_update(&state, pair, data).await;
                             }
                         }
@@ -142,99 +188,153 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     info!("WebSocket client disconnected");
 }
 
-/// Client that sends signals to server.rthmn.com
-async fn server_client(state: Arc<AppState>, url: String, token: String, mut signal_rx: mpsc::Receiver<SignalMessage>) {
+/// Forwards raw signals to main server via HTTP (no batching)
+async fn main_server_forwarder(
+    state: Arc<AppState>,
+    token: String,
+    mut signal_rx: mpsc::Receiver<SignalMessage>,
+) {
+    let client = reqwest::Client::new();
     loop {
-        info!("Connecting to server.rthmn.com at {}...", url);
-        match connect_async(&url).await {
-            Ok((ws, _)) => {
-                info!("Connected to server.rthmn.com");
-                let (mut write, mut read) = ws.split();
-                let mut authed = false;
-                let mut heartbeat_interval = tokio::time::interval(tokio::time::Duration::from_secs(HEARTBEAT_SECS));
+        let Some(signal) = signal_rx.recv().await else { break };
 
-                loop {
-                    tokio::select! {
-                        Some(msg) = read.next() => {
-                            match msg {
-                                Ok(TungMessage::Binary(data)) => {
-                                    if let Ok(m) = rmp_serde::from_slice::<serde_json::Value>(&data) {
-                                        match m.get("type").and_then(|v| v.as_str()) {
-                                            Some("authRequired") => {
-                                                let auth = rmp_serde::to_vec(&serde_json::json!({
-                                                    "type": "auth",
-                                                    "token": token
-                                                })).unwrap();
-                                                let _ = write.send(TungMessage::Binary(auth)).await;
-                                            }
-                                            Some("welcome") => {
-                                                authed = true;
-                                                *state.server_connected.write().await = true;
-                                                info!("Authenticated with server.rthmn.com");
-                                            }
-                                            _ => {}
-                                        }
-                                    }
-                                }
-                                Ok(TungMessage::Ping(data)) => {
-                                    let _ = write.send(TungMessage::Pong(data)).await;
-                                }
-                                Ok(TungMessage::Close(_)) => break,
-                                Err(e) => { warn!("server.rthmn.com error: {}", e); break; }
-                                _ => {}
-                            }
-                        }
-                        Some(signal) = signal_rx.recv(), if authed => {
-                            let msg = rmp_serde::to_vec(&serde_json::json!({
-                                "type": "signal",
-                                "signalId": signal.signal_id,
-                                "pair": signal.pair,
-                                "signalType": signal.signal_type,
-                                "level": signal.level,
-                                "customPattern": signal.custom_pattern,
-                                "patternSequence": signal.pattern_sequence,
-                                "timestamp": signal.timestamp,
-                                "data": signal.data
-                            })).unwrap();
-                            let _ = write.send(TungMessage::Binary(msg)).await;
-                            *state.signals_sent.write().await += 1;
-                            info!("Signal sent: {} {} L{}", signal.pair, signal.signal_type, signal.level);
-                        }
-                        _ = heartbeat_interval.tick(), if authed => {
-                            // Send ping to keep connection alive
-                            let _ = write.send(TungMessage::Ping(vec![])).await;
-                        }
-                    }
-                }
-                *state.server_connected.write().await = false;
+        let url = format!("{}/signals/raw", state.main_server_url.trim_end_matches('/'));
+        let response = client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Content-Type", "application/json")
+            .json(&signal)
+            .send()
+            .await;
+
+        match response {
+            Ok(resp) if resp.status().is_success() => {
+                *state.signals_sent.write().await += 1;
+                info!(
+                    "Forwarded raw signal to main server: {} {} L{}",
+                    signal.pair, signal.signal_type, signal.level
+                );
             }
-            Err(e) => warn!("Failed to connect to server.rthmn.com: {}", e),
+            Ok(resp) => {
+                warn!(
+                    "Failed to forward raw signal to main server: {}",
+                    resp.status()
+                );
+            }
+            Err(e) => {
+                warn!("Failed to forward raw signal to main server: {}", e);
+            }
         }
-        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
     }
 }
 
 async fn process_box_update(state: &Arc<AppState>, pair: &str, data: &serde_json::Value) {
-    let boxes: Vec<signals_rthmn::types::Box> = data.get("boxes").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
+    let boxes: Vec<signals_rthmn::types::Box> = data
+        .get("boxes")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
     let price = data.get("price").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let timestamp = data.get("timestamp").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    if boxes.is_empty() { return; }
+    let timestamp = data
+        .get("timestamp")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
 
-    state.box_data.write().await.insert(pair.to_string(), BoxData { pair: pair.to_string(), boxes: boxes.clone(), price, timestamp });
+    if boxes.is_empty() {
+        return;
+    }
 
+    // Store box data
+    state.box_data.write().await.insert(
+        pair.to_string(),
+        BoxData {
+            pair: pair.to_string(),
+            boxes: boxes.clone(),
+            price,
+            timestamp,
+        },
+    );
+
+    // CHECK ACTIVE SIGNALS AGAINST CURRENT PRICE
+    // This will settle any signals that hit their SL or TP
+    let settlements = state.tracker.check_price(pair, price).await;
+    if !settlements.is_empty() {
+        info!(
+            "{} @ ${:.5} - {} signal(s) settled",
+            pair,
+            price,
+            settlements.len()
+        );
+    }
+
+    // Detect patterns and generate new signals
     let patterns = state.scanner.read().await.detect_patterns(pair, &boxes);
-    if patterns.is_empty() { return; }
+    if patterns.is_empty() {
+        return;
+    }
 
     info!("{} @ ${:.2} - {} pattern(s)", pair, price, patterns.len());
-    
-    for signal in state.generator.generate_signals(pair, &patterns, &boxes, price) {
-        info!("SIGNAL: {} {} L{} {:?}", signal.pair, signal.signal_type, signal.level, signal.pattern_sequence);
+
+    for signal in state
+        .generator
+        .generate_signals(pair, &patterns, &boxes, price)
+    {
+        // Find a valid trade opportunity
+        let valid_trade = signal
+            .data
+            .trade_opportunities
+            .iter()
+            .find(|t| t.is_valid);
+
+        let Some(trade) = valid_trade else {
+            continue;
+        };
+
+        // Log the signal details
+        info!(
+            "SIGNAL: {} {} L{} {:?}",
+            signal.pair, signal.signal_type, signal.level, signal.pattern_sequence
+        );
         for (i, b) in signal.data.box_details.iter().enumerate() {
-            info!("  Box {}: {} H:{:.5} L:{:.5}", i + 1, b.integer_value, b.high, b.low);
+            info!(
+                "  Box {}: {} H:{:.5} L:{:.5}",
+                i + 1,
+                b.integer_value,
+                b.high,
+                b.low
+            );
         }
-        for t in signal.data.trade_opportunities.iter().filter(|t| t.is_valid) {
-            info!("  {} E:{:.5} S:{:.5} T:{:.5} R:R:{:.2}", t.rule_id, t.entry.unwrap_or(0.0), t.stop_loss.unwrap_or(0.0), t.target.unwrap_or(0.0), t.risk_reward_ratio.unwrap_or(0.0));
-        }
+        info!(
+            "  {} E:{:.5} S:{:.5} T:{:.5} R:R:{:.2}",
+            trade.rule_id,
+            trade.entry.unwrap_or(0.0),
+            trade.stop_loss.unwrap_or(0.0),
+            trade.target.unwrap_or(0.0),
+            trade.risk_reward_ratio.unwrap_or(0.0)
+        );
+
+        // Create active signal for tracking
+        let active_signal = ActiveSignal {
+            signal_id: signal.signal_id.clone(),
+            pair: pair.to_string(),
+            signal_type: if signal.signal_type == "LONG" {
+                SignalType::LONG
+            } else {
+                SignalType::SHORT
+            },
+            level: signal.level,
+            entry: trade.entry.unwrap_or(0.0),
+            stop_loss: trade.stop_loss.unwrap_or(0.0),
+            target: trade.target.unwrap_or(0.0),
+            risk_reward_ratio: trade.risk_reward_ratio,
+            pattern_sequence: signal.pattern_sequence.clone(),
+            created_at: signal.timestamp,
+        };
+
+        // Add to tracker (writes to Convex)
+        state.tracker.add_signal(active_signal).await;
+
+        // Immediately forward raw signal JSON to the main server (no batching)
         let _ = state.signal_tx.send(signal).await;
     }
 }

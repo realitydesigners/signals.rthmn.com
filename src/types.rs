@@ -25,7 +25,7 @@ pub struct PatternMatch { pub pair: String, pub level: u32, pub traversal_path: 
 pub struct BoxDetail { pub integer_value: i32, pub high: f64, pub low: f64, pub value: f64 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct SignalMessage { pub signal_id: String, pub pair: String, pub signal_type: String, pub level: u32, pub custom_pattern: Option<String>, pub pattern_sequence: Vec<i32>, pub timestamp: i64, pub data: SignalData }
+pub struct SignalMessage { pub signal_id: String, pub pair: String, pub signal_type: String, pub level: u32, pub pattern_sequence: Vec<i32>, pub timestamp: i64, pub data: SignalData }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SignalData { pub box_details: Vec<BoxDetail>, pub trade_opportunities: Vec<TradeOpportunity>, pub complete_box_snapshot: Vec<i32>, pub has_trade_rules: bool }
