@@ -1,0 +1,84 @@
+
+
+Q: Example of SAME SIGNAL, which is both a level 5 and a 4?
+A: Since the only difference in these when the same path is the TP is larger to match the larger box size, then should we make the TP be an array of TP? TP:1 = LVL4, TP2: LVL5, etc ?
+We also want to take preferennce in general to the highest LVL targets
+
+[{"idx":814,"id":12484,"signal_id":"GBPCAD_LONG_6503_-5637_-4880_-4227_-3664_-3173_-2748_-2379_-2059_-1783_1004_-870_-754_-653_-568_-492_-426_-368_207_-179_100_-87_-75_-65_37_-32_16_5_1766106383123","pair":"GBPCAD","signal_type":"LONG","level":5,"pattern_sequence":["6503","-5637","-4880","-4227","-3664","-3173","-2748","-2379","-2059","-1783","1004","-870","-754","-653","-568","-492","-426","-368","207","-179","100","-87","-75","-65","37","-32","16"],"timestamp":"2025-12-19 01:06:23.123+00","entry":1.84349,"stop_loss":1.84333,"target":1.89148,"risk_reward_ratio":299.9374999997,"box_details":null,"created_at":"2025-12-19 01:06:23.159025+00","status":"failed","settled_price":"1.84332","settled_at":"2025-12-19 01:09:18.968318+00","subscribers":null},{"idx":815,"id":12485,"signal_id":"GBPCAD_LONG_1004_-870_-754_-653_-568_-492_-426_-368_207_-179_100_-87_-75_-65_37_-32_16_4_1766106383123","pair":"GBPCAD","signal_type":"LONG","level":4,"pattern_sequence":["1004","-870","-754","-653","-568","-492","-426","-368","207","-179","100","-87","-75","-65","37","-32","16"],"timestamp":"2025-12-19 01:06:23.123+00","entry":1.84349,"stop_loss":1.84333,"target":1.85148,"risk_reward_ratio":49.9374999999497,"box_details":null,"created_at":"2025-12-19 01:06:23.201412+00","status":"failed","settled_price":"1.84332","settled_at":"2025-12-19 01:09:18.935599+00","subscribers":null}]
+
+--
+
+Q: We need a better methdology for canceling out duplicate signals.
+A: Consider this example: If we have a LVL 2 trade and the entry box has changed more than 3 times where the next lvl up Box high and low HASN't changed, then even if we do get a signal for the 4th time tihs traversal path, dont send iter
+
+Example, if "16" flipped postitive to negative like this: "16", "-16", "16", "-16", "16", "-16", "16", "-16", ["16" THIS IS INVALID, TOO MANY CHANGES]
+
+LVL 2:
+[
+  "276", // high and low is same
+  "-239",
+  "-207",
+  "-179",
+  "-155",
+  "-134",
+  "-116",
+  "-100",
+  "-87",
+  "-75",
+  "-65",
+  "37", // high and low is same
+  "-32",
+  "16" // changes more than 3 times 
+]
+
+Example,  if "21" flips to negative like this: "32", "-32", "32", "-32", "32", "-32", "32", "-32", ["32" THIS IS INVALID, TOO MANY CHANGES]
+
+LVL 3:
+[
+  "1004", // high and low is same
+  "-870",
+  "-754",
+  "-653",
+  "-568",
+  "-492",
+  "-426",
+  "-368",
+  "207", // high and low is same
+  "-179",
+  "100", // high and low is same
+  "-87",
+  "-75",
+  "-65",
+  "-56",
+  "-49",
+  "-42",
+  "-37",
+  "21" // changes more than 3 times 
+]
+
+---
+
+Q: We need to have a preference for lower prices ONLY in LVL 1
+A: This means if we are in a long trade and it's below, its technically a LVL 1. where for the signal that has a LVL 1 we only want to sned out the First LVL 1 it found, not each sequential one so long as the largest box size in the sequence retains the same high or low
+
+LVL 1
+  "100", // high and low is same
+  "-87",
+  "-75",
+  "-65",
+  "-56",
+  "-49",
+  "-42",
+  "-37",
+  "21" // changes more than 3 times 
+
+LVL 1
+  "100", // high and low is same
+  "-87",
+  "-75",
+  "-65",
+  "-56",
+  "-49",
+  "-42",
+  "37", // don't send, becuase the prev L1 is already active and in profit, so these new flip to positive changs are GOOD, but not a new signal to enter a new trade
+ 

@@ -1,3 +1,4 @@
+pub mod deduplication;
 pub mod instruments;
 pub mod patterns;
 pub mod scanner;

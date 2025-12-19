@@ -1,9 +1,10 @@
 use signals_rthmn::{
+    deduplication::Deduplicator,
     scanner::MarketScanner,
     signal::SignalGenerator,
     supabase::SupabaseClient,
     tracker::{ActiveSignal, SignalTracker},
-    types::{BoxData, SignalMessage, SignalType},
+    types::{BoxData, PatternMatch, SignalMessage, SignalType},
 };
 use axum::{
     extract::{
@@ -25,6 +26,7 @@ pub struct AppState {
     scanner: RwLock<MarketScanner>,
     generator: SignalGenerator,
     tracker: SignalTracker,
+    deduplicator: Deduplicator,
     box_data: RwLock<HashMap<String, BoxData>>,
     signals_sent: RwLock<u64>,
     main_server_url: String,
@@ -74,6 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         scanner: RwLock::new(scanner),
         generator: SignalGenerator::default(),
         tracker,
+        deduplicator: Deduplicator::new(),
         box_data: RwLock::new(HashMap::new()),
         signals_sent: RwLock::new(0),
         main_server_url,
@@ -265,19 +268,68 @@ async fn process_box_update(state: &Arc<AppState>, pair: &str, data: &serde_json
             price,
             settlements.len()
         );
+        
+        // Remove settled L1 signals from deduplicator
+        for settlement in &settlements {
+            if settlement.signal.level == 1 {
+                state
+                    .deduplicator
+                    .remove_l1_signal(pair, &settlement.signal.signal_type.to_string())
+                    .await;
+            }
+        }
     }
 
     // Detect patterns and generate new signals
-    let patterns = state.scanner.read().await.detect_patterns(pair, &boxes);
-    if patterns.is_empty() {
+    let all_patterns = state.scanner.read().await.detect_patterns(pair, &boxes);
+    if all_patterns.is_empty() {
         return;
     }
 
-    info!("{} @ ${:.2} - {} pattern(s)", pair, price, patterns.len());
+    let timestamp_ms = chrono::Utc::now().timestamp_millis();
+
+    // Filter patterns through deduplicator
+    let mut filtered_patterns = Vec::new();
+    for pattern in &all_patterns {
+        if !state
+            .deduplicator
+            .should_filter_pattern(pair, pattern, &boxes, timestamp_ms)
+            .await
+        {
+            filtered_patterns.push(pattern.clone());
+        }
+    }
+
+    if filtered_patterns.is_empty() {
+        return;
+    }
+
+    // Group patterns by sequence and prefer highest level
+    let mut pattern_groups: HashMap<String, PatternMatch> = HashMap::new();
+    for pattern in filtered_patterns {
+        let key = pattern
+            .traversal_path
+            .path
+            .iter()
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>()
+            .join("_");
+        
+        if let Some(existing) = pattern_groups.get(&key) {
+            if pattern.level > existing.level {
+                pattern_groups.insert(key, pattern);
+            }
+        } else {
+            pattern_groups.insert(key, pattern);
+        }
+    }
+
+    let unique_patterns: Vec<_> = pattern_groups.into_values().collect();
+    info!("{} @ ${:.2} - {} pattern(s) after deduplication", pair, price, unique_patterns.len());
 
     for signal in state
         .generator
-        .generate_signals(pair, &patterns, &boxes, price)
+        .generate_signals(pair, &unique_patterns, &boxes, price)
     {
         // Find a valid trade opportunity
         let valid_trade = signal
@@ -289,6 +341,31 @@ async fn process_box_update(state: &Arc<AppState>, pair: &str, data: &serde_json
         let Some(trade) = valid_trade else {
             continue;
         };
+
+        let entry = trade.entry.unwrap_or(0.0);
+        let stop_loss = trade.stop_loss.unwrap_or(0.0);
+        let target = trade.target.unwrap_or(0.0);
+
+        // Check if we've sent this exact signal recently (same pattern + level + prices)
+        if state
+            .deduplicator
+            .should_filter_recent_signal(
+                pair,
+                &signal.pattern_sequence,
+                signal.level,
+                entry,
+                stop_loss,
+                target,
+                signal.timestamp,
+            )
+            .await
+        {
+            info!(
+                "FILTERED: {} {} L{} - duplicate signal within time window",
+                signal.pair, signal.signal_type, signal.level
+            );
+            continue;
+        }
 
         // Log the signal details
         info!(
@@ -307,9 +384,9 @@ async fn process_box_update(state: &Arc<AppState>, pair: &str, data: &serde_json
         info!(
             "  {} E:{:.5} S:{:.5} T:{:.5} R:R:{:.2}",
             trade.rule_id,
-            trade.entry.unwrap_or(0.0),
-            trade.stop_loss.unwrap_or(0.0),
-            trade.target.unwrap_or(0.0),
+            entry,
+            stop_loss,
+            target,
             trade.risk_reward_ratio.unwrap_or(0.0)
         );
 
@@ -323,9 +400,9 @@ async fn process_box_update(state: &Arc<AppState>, pair: &str, data: &serde_json
                 SignalType::SHORT
             },
             level: signal.level,
-            entry: trade.entry.unwrap_or(0.0),
-            stop_loss: trade.stop_loss.unwrap_or(0.0),
-            target: trade.target.unwrap_or(0.0),
+            entry,
+            stop_loss,
+            target,
             risk_reward_ratio: trade.risk_reward_ratio,
             pattern_sequence: signal.pattern_sequence.clone(),
             created_at: signal.timestamp,
