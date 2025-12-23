@@ -47,12 +47,12 @@ pub struct TradeRule {
 // LONG RULES (buy setups):
 //   Entry = break above entry_box HIGH
 //   Stop  = entry_box LOW
-//   Target = box 1 HIGH (full move potential)
+//   Target = box 1 HIGH + box 1 size (high + (high - low))
 //
 // SHORT RULES (sell setups):
 //   Entry = break below entry_box LOW
 //   Stop  = entry_box HIGH
-//   Target = box 1 LOW (full move potential)
+//   Target = box 1 LOW - box 1 size (low - (high - low))
 //
 // ACTIVE LEVELS:
 //   L1 → entry/stop at box 2
@@ -224,7 +224,7 @@ impl SignalGenerator {
         }
     }
 
-    fn calculate_opportunities(&self, pattern: &PatternMatch) -> Vec<TradeOpportunity> {
+    pub fn calculate_opportunities(&self, pattern: &PatternMatch) -> Vec<TradeOpportunity> {
         let sig_type = pattern.traversal_path.signal_type;
         let mut primary: Vec<&BoxDetail> = pattern.box_details.iter()
             .filter(|b| matches!(sig_type, SignalType::LONG if b.integer_value > 0) || matches!(sig_type, SignalType::SHORT if b.integer_value < 0))
@@ -236,7 +236,16 @@ impl SignalGenerator {
             .map(|rule| {
                 let entry = get_price(&primary, rule.entry_box, rule.entry_point);
                 let stop = get_price(&primary, rule.stop_box, rule.stop_point);
-                let target = get_price(&primary, rule.target_box, rule.target_point);
+                let target_base = get_price(&primary, rule.target_box, rule.target_point);
+                let target = target_base.and_then(|base| {
+                    primary.get(rule.target_box.saturating_sub(1)).map(|box1| {
+                        let box_size = box1.high - box1.low;
+                        match sig_type {
+                            SignalType::LONG => base + box_size,
+                            SignalType::SHORT => base - box_size,
+                        }
+                    })
+                });
                 let rr = entry.zip(stop).zip(target).and_then(|((e, s), t)| {
                     let risk = (e - s).abs();
                     (risk > 0.0).then(|| (t - e).abs() / risk)
