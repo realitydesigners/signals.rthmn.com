@@ -20,7 +20,7 @@ use futures_util::{SinkExt, StreamExt};
 use std::{collections::HashMap, env, sync::Arc};
 use tokio::sync::{mpsc, RwLock};
 use tower_http::cors::{Any, CorsLayer};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 pub struct AppState {
     scanner: RwLock<MarketScanner>,
@@ -170,6 +170,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                             if let (Some(pair), Some(data)) =
                                 (m.get("pair").and_then(|v| v.as_str()), m.get("data"))
                             {
+                                debug!("Received boxUpdate for {}", pair);
                                 process_box_update(&state, pair, data).await;
                             }
                         }
@@ -283,8 +284,14 @@ async fn process_box_update(state: &Arc<AppState>, pair: &str, data: &serde_json
     // Detect patterns and generate new signals
     let all_patterns = state.scanner.read().await.detect_patterns(pair, &boxes);
     if all_patterns.is_empty() {
+        // Debug: log when no patterns detected
+        let (point, _) = signals_rthmn::instruments::get_instrument_config(pair);
+        let integer_values: Vec<i32> = boxes.iter().map(|b| (b.value / point).round() as i32).collect();
+        debug!("{}: No patterns detected. Box integer values: {:?}", pair, integer_values);
         return;
     }
+    
+    info!("{}: Detected {} pattern(s)", pair, all_patterns.len());
 
     let timestamp_ms = chrono::Utc::now().timestamp_millis();
 
@@ -301,8 +308,11 @@ async fn process_box_update(state: &Arc<AppState>, pair: &str, data: &serde_json
     }
 
     if filtered_patterns.is_empty() {
+        debug!("{}: All {} pattern(s) filtered by deduplicator", pair, all_patterns.len());
         return;
     }
+    
+    info!("{}: {} pattern(s) passed deduplication", pair, filtered_patterns.len());
 
     // Group patterns by sequence and prefer highest level
     let mut pattern_groups: HashMap<String, PatternMatch> = HashMap::new();
