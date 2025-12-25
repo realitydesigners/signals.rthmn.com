@@ -140,7 +140,11 @@ async fn ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(|socket| handle_socket(socket, state))
+    info!("WebSocket upgrade request received");
+    ws.on_upgrade(|socket| {
+        info!("WebSocket upgrade completed, starting handler");
+        handle_socket(socket, state)
+    })
 }
 
 async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
