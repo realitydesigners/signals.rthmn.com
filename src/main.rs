@@ -4,7 +4,7 @@ use signals_rthmn::{
     signal::SignalGenerator,
     supabase::SupabaseClient,
     tracker::{ActiveSignal, SignalTracker},
-    types::{BoxData, PatternMatch, SignalMessage, SignalType},
+    types::{BoxData, SignalMessage, SignalType},
 };
 use axum::{
     extract::{
@@ -319,8 +319,9 @@ async fn process_box_update(state: &Arc<AppState>, pair: &str, data: &serde_json
     info!("{}: {} pattern(s) passed deduplication", pair, filtered_patterns.len());
 
     // Remove duplicates where lower-level patterns are subsets of higher-level ones
+    let filtered_count = filtered_patterns.len();
     let unique_patterns = state.deduplicator.remove_subset_duplicates(filtered_patterns);
-    let grouped_count = filtered_patterns.len() - unique_patterns.len();
+    let grouped_count = filtered_count - unique_patterns.len();
     if grouped_count > 0 {
         info!("{} @ ${:.2} - {} pattern(s) after subset deduplication (removed {} lower-level duplicates)", 
             pair, price, unique_patterns.len(), grouped_count);
