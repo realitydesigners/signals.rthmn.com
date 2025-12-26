@@ -318,28 +318,15 @@ async fn process_box_update(state: &Arc<AppState>, pair: &str, data: &serde_json
     
     info!("{}: {} pattern(s) passed deduplication", pair, filtered_patterns.len());
 
-    // Group patterns by sequence and prefer highest level
-    let mut pattern_groups: HashMap<String, PatternMatch> = HashMap::new();
-    for pattern in filtered_patterns {
-        let key = pattern
-            .traversal_path
-            .path
-            .iter()
-            .map(|v| v.to_string())
-            .collect::<Vec<_>>()
-            .join("_");
-        
-        if let Some(existing) = pattern_groups.get(&key) {
-            if pattern.level > existing.level {
-                pattern_groups.insert(key, pattern);
-            }
-        } else {
-            pattern_groups.insert(key, pattern);
-        }
+    // Remove duplicates where lower-level patterns are subsets of higher-level ones
+    let unique_patterns = state.deduplicator.remove_subset_duplicates(filtered_patterns);
+    let grouped_count = filtered_patterns.len() - unique_patterns.len();
+    if grouped_count > 0 {
+        info!("{} @ ${:.2} - {} pattern(s) after subset deduplication (removed {} lower-level duplicates)", 
+            pair, price, unique_patterns.len(), grouped_count);
+    } else {
+        info!("{} @ ${:.2} - {} pattern(s) after deduplication", pair, price, unique_patterns.len());
     }
-
-    let unique_patterns: Vec<_> = pattern_groups.into_values().collect();
-    info!("{} @ ${:.2} - {} pattern(s) after deduplication", pair, price, unique_patterns.len());
 
     for signal in state
         .generator
