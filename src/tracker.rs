@@ -1,5 +1,5 @@
 use crate::supabase::SupabaseClient;
-use crate::types::SignalType;
+use crate::types::{BoxDetail, SignalType};
 use std::collections::HashMap;
 use tokio::sync::RwLock;
 use tracing::info;
@@ -16,6 +16,7 @@ pub struct ActiveSignal {
     pub target: f64,
     pub risk_reward_ratio: Option<f64>,
     pub pattern_sequence: Vec<i32>,
+    pub box_details: Vec<BoxDetail>,
     pub created_at: i64,
 }
 

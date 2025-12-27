@@ -348,22 +348,25 @@ async fn process_box_update(state: &Arc<AppState>, pair: &str, data: &serde_json
         let stop_loss = trade.stop_loss.unwrap_or(0.0);
         let target = trade.target.unwrap_or(0.0);
 
-        // Check if we've sent this exact signal recently (same pattern + level + prices)
+        // Check if signal should be filtered based on structural boxes
+        let signal_type_enum = if signal.signal_type == "LONG" {
+            SignalType::LONG
+        } else {
+            SignalType::SHORT
+        };
+        
         if state
             .deduplicator
-            .should_filter_recent_signal(
+            .should_filter_structural_boxes(
                 pair,
                 &signal.pattern_sequence,
-                signal.level,
-                entry,
-                stop_loss,
-                target,
-                signal.timestamp,
+                &signal.data.box_details,
+                signal_type_enum,
             )
             .await
         {
             info!(
-                "FILTERED: {} {} L{} - duplicate signal within time window",
+                "FILTERED: {} {} L{} - duplicate signal (structural boxes unchanged)",
                 signal.pair, signal.signal_type, signal.level
             );
             continue;
@@ -407,6 +410,7 @@ async fn process_box_update(state: &Arc<AppState>, pair: &str, data: &serde_json
             target,
             risk_reward_ratio: trade.risk_reward_ratio,
             pattern_sequence: signal.pattern_sequence.clone(),
+            box_details: signal.data.box_details.clone(),
             created_at: signal.timestamp,
         };
 

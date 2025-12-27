@@ -26,6 +26,8 @@ pub struct Deduplicator {
     active_l1_signals: RwLock<HashMap<String, L1Signal>>,
     recent_signals: RwLock<HashMap<String, Vec<RecentSignal>>>,
     box1_states: RwLock<HashMap<String, (f64, f64)>>,
+    // Track structural boxes per pair: pair -> (integer_value -> (high, low))
+    structural_boxes: RwLock<HashMap<String, HashMap<i32, (f64, f64)>>>,
 }
 
 impl Deduplicator {
@@ -34,6 +36,7 @@ impl Deduplicator {
             active_l1_signals: RwLock::new(HashMap::new()),
             recent_signals: RwLock::new(HashMap::new()),
             box1_states: RwLock::new(HashMap::new()),
+            structural_boxes: RwLock::new(HashMap::new()),
         }
     }
 
@@ -82,57 +85,77 @@ impl Deduplicator {
         false
     }
 
-    pub async fn should_filter_recent_signal(
+    /// Check if signal should be filtered based on structural boxes tracking
+    /// Returns true if duplicate (all structural boxes unchanged), false if new pattern
+    /// Tracks structural boxes per pattern sequence to ensure only one signal per pattern
+    pub async fn should_filter_structural_boxes(
         &self,
         pair: &str,
         pattern_sequence: &[i32],
-        level: u32,
-        entry: f64,
-        stop_loss: f64,
-        target: f64,
-        timestamp: i64,
+        box_details: &[BoxDetail],
+        signal_type: crate::types::SignalType,
     ) -> bool {
-        const TIME_WINDOW_MS: i64 = 5 * 60 * 1000;
-        const PRICE_TOLERANCE: f64 = 0.0001;
+        const TOLERANCE: f64 = 0.00001;
 
+        // Extract structural boxes: positive for LONG, negative for SHORT
+        let structural: Vec<&BoxDetail> = box_details
+            .iter()
+            .filter(|b| match signal_type {
+                crate::types::SignalType::LONG => b.integer_value > 0,
+                crate::types::SignalType::SHORT => b.integer_value < 0,
+            })
+            .collect();
+
+        if structural.is_empty() {
+            return false; // No structural boxes, allow signal
+        }
+
+        // Create pattern key from sequence for tracking per pattern
         let pattern_key: String = pattern_sequence
             .iter()
             .map(|v| v.to_string())
             .collect::<Vec<_>>()
             .join("_");
+        
+        let tracking_key = format!("{}:{}", pair, pattern_key);
 
-        let mut recent_signals = self.recent_signals.write().await;
-        let pair_signals = recent_signals
-            .entry(pair.to_string())
-            .or_insert_with(Vec::new);
+        let mut tracked = self.structural_boxes.write().await;
+        let pattern_tracked = tracked.entry(tracking_key.clone()).or_insert_with(HashMap::new);
 
-        let now = timestamp;
-        pair_signals.retain(|s| now - s.sent_at < TIME_WINDOW_MS);
+        // Check if all structural boxes match tracked values for this specific pattern
+        let mut all_match = true;
+        let mut any_changed = false;
 
-        for signal in pair_signals.iter() {
-            if signal.pattern_key == pattern_key
-                && signal.level == level
-            {
-                let prices_match = (signal.entry - entry).abs() < PRICE_TOLERANCE
-                    && (signal.stop_loss - stop_loss).abs() < PRICE_TOLERANCE
-                    && (signal.target - target).abs() < PRICE_TOLERANCE;
+        for box_detail in &structural {
+            let integer_value = box_detail.integer_value;
+            let current_high = box_detail.high;
+            let current_low = box_detail.low;
 
-                if prices_match {
-                    return true;
+            if let Some(&(tracked_high, tracked_low)) = pattern_tracked.get(&integer_value) {
+                let high_changed = (tracked_high - current_high).abs() >= TOLERANCE;
+                let low_changed = (tracked_low - current_low).abs() >= TOLERANCE;
+
+                if high_changed || low_changed {
+                    any_changed = true;
+                    all_match = false;
+                    // Update tracking with new values
+                    pattern_tracked.insert(integer_value, (current_high, current_low));
                 }
+            } else {
+                // New structural box for this pattern, add to tracking
+                all_match = false;
+                pattern_tracked.insert(integer_value, (current_high, current_low));
             }
         }
 
-        pair_signals.push(RecentSignal {
-            pattern_key,
-            level,
-            entry,
-            stop_loss,
-            target,
-            sent_at: timestamp,
-        });
-
-        false
+        // If any structural box changed, update tracking and allow signal
+        if any_changed {
+            false // Allow signal (structural boxes changed)
+        } else if all_match && !pattern_tracked.is_empty() {
+            true // Filter signal (all structural boxes unchanged for this pattern)
+        } else {
+            false // Allow signal (first time seeing this pattern)
+        }
     }
 
     fn should_filter_l1(

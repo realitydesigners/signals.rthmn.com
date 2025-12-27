@@ -36,92 +36,92 @@ pub struct TradeRule {
 // Higher levels = deeper fractal structure = stronger/rarer signals.
 //
 // ============================================================================
-// BOX ORDERING:
+// BOX ORDERING (0-indexed):
 // Boxes are sorted by absolute value descending:
-//   Box 1 = largest (primary direction)
-//   Box 2 = second largest
-//   Box 3 = third largest
+//   Box 0 = largest (primary direction)
+//   Box 1 = second largest
+//   Box 2 = third largest
 //   etc.
 //
 // ============================================================================
 // LONG RULES (buy setups):
 //   Entry = break above entry_box HIGH
 //   Stop  = entry_box LOW
-//   Target = box 1 HIGH + box 1 size (high + (high - low))
+//   Target = box 0 HIGH + box 0 size (high + (high - low))
 //
 // SHORT RULES (sell setups):
 //   Entry = break below entry_box LOW
 //   Stop  = entry_box HIGH
-//   Target = box 1 LOW - box 1 size (low - (high - low))
+//   Target = box 0 LOW - box 0 size (low - (high - low))
 //
 // ACTIVE LEVELS:
-//   L1 → entry/stop at box 2
-//   L2 → entry/stop at box 3
-//   L3 → entry/stop at box 4
-//   L4 → entry/stop at box 5
-//   L5 → entry/stop at box 6
-//   L6 → entry/stop at box 7
+//   L1 → entry/stop at box 1, target at box 0
+//   L2 → entry/stop at box 2, target at box 0
+//   L3 → entry/stop at box 3, target at box 0
+//   L4 → entry/stop at box 4, target at box 0
+//   L5 → entry/stop at box 5, target at box 0
+//   L6 → entry/stop at box 6, target at box 0
 // ============================================================================
 
 const LONG_RULES: &[TradeRule] = &[
     TradeRule { 
         id: "L1_RULE_1", 
         level: 1, 
-        entry_box: 2, 
+        entry_box: 1, 
         entry_point: PricePoint::HIGH, 
-        stop_box: 2, 
+        stop_box: 1, 
         stop_point: PricePoint::LOW, 
-        target_box: 1, 
+        target_box: 0, 
         target_point: PricePoint::HIGH,
     },
     TradeRule { 
         id: "L2_RULE_1", 
         level: 2, 
-        entry_box: 3, 
+        entry_box: 2, 
         entry_point: PricePoint::HIGH, 
         stop_box: 2, 
         stop_point: PricePoint::LOW, 
-        target_box: 1, 
+        target_box: 0, 
         target_point: PricePoint::HIGH,
     },
     TradeRule { 
         id: "L3_RULE_1", 
         level: 3, 
-        entry_box: 4, 
+        entry_box: 3, 
         entry_point: PricePoint::HIGH, 
         stop_box: 3, 
         stop_point: PricePoint::LOW, 
-        target_box: 1, 
+        target_box: 0, 
         target_point: PricePoint::HIGH,
     },
     TradeRule { 
         id: "L4_RULE_1", 
         level: 4, 
-        entry_box: 5, 
+        entry_box: 4, 
         entry_point: PricePoint::HIGH, 
         stop_box: 4, 
         stop_point: PricePoint::LOW, 
-        target_box: 1, 
+        target_box: 0, 
         target_point: PricePoint::HIGH,
     },
     TradeRule { 
         id: "L5_RULE_1", 
         level: 5, 
-        entry_box: 6, 
+        entry_box: 5, 
         entry_point: PricePoint::HIGH, 
         stop_box: 5, 
         stop_point: PricePoint::LOW, 
-        target_box: 1, 
+        target_box: 0, 
         target_point: PricePoint::HIGH,
     },
     TradeRule { 
         id: "L6_RULE_1", 
         level: 6, 
-        entry_box: 7, 
+        entry_box: 6, 
         entry_point: PricePoint::HIGH, 
         stop_box: 6, 
         stop_point: PricePoint::LOW, 
-        target_box: 1, 
+        target_box: 0, 
         target_point: PricePoint::HIGH,
     },
 ];
@@ -130,61 +130,61 @@ const SHORT_RULES: &[TradeRule] = &[
     TradeRule { 
         id: "L1_RULE_1", 
         level: 1, 
-        entry_box: 2, 
+        entry_box: 1, 
         entry_point: PricePoint::LOW, 
-        stop_box: 2, 
+        stop_box: 1, 
         stop_point: PricePoint::HIGH, 
-        target_box: 1, 
+        target_box: 0, 
         target_point: PricePoint::LOW,
     },
     TradeRule { 
         id: "L2_RULE_1", 
         level: 2, 
-        entry_box: 3, 
+        entry_box: 2, 
         entry_point: PricePoint::LOW, 
         stop_box: 2, 
         stop_point: PricePoint::HIGH, 
-        target_box: 1, 
+        target_box: 0, 
         target_point: PricePoint::LOW,
     },
     TradeRule { 
         id: "L3_RULE_1", 
         level: 3, 
-        entry_box: 4, 
+        entry_box: 3, 
         entry_point: PricePoint::LOW, 
         stop_box: 3, 
         stop_point: PricePoint::HIGH, 
-        target_box: 1, 
+        target_box: 0, 
         target_point: PricePoint::LOW,
     },
     TradeRule { 
         id: "L4_RULE_1", 
         level: 4, 
-        entry_box: 5, 
+        entry_box: 4, 
         entry_point: PricePoint::LOW, 
         stop_box: 4, 
         stop_point: PricePoint::HIGH, 
-        target_box: 1, 
+        target_box: 0, 
         target_point: PricePoint::LOW,
     },
     TradeRule { 
         id: "L5_RULE_1", 
         level: 5, 
-        entry_box: 6, 
+        entry_box: 5, 
         entry_point: PricePoint::LOW, 
         stop_box: 5, 
         stop_point: PricePoint::HIGH, 
-        target_box: 1, 
+        target_box: 0, 
         target_point: PricePoint::LOW,
     },
     TradeRule { 
         id: "L6_RULE_1", 
         level: 6, 
-        entry_box: 7, 
+        entry_box: 6, 
         entry_point: PricePoint::LOW, 
         stop_box: 6, 
         stop_point: PricePoint::HIGH, 
-        target_box: 1, 
+        target_box: 0, 
         target_point: PricePoint::LOW,
     },
 ];
@@ -238,8 +238,8 @@ impl SignalGenerator {
                 let stop = get_price(&primary, rule.stop_box, rule.stop_point);
                 let target_base = get_price(&primary, rule.target_box, rule.target_point);
                 let target = target_base.and_then(|base| {
-                    primary.get(rule.target_box.saturating_sub(1)).map(|box1| {
-                        let box_size = box1.high - box1.low;
+                    primary.get(rule.target_box).map(|box0| {
+                        let box_size = box0.high - box0.low;
                         match sig_type {
                             SignalType::LONG => base + box_size,
                             SignalType::SHORT => base - box_size,
@@ -263,7 +263,7 @@ impl SignalGenerator {
 }
 
 fn get_price(boxes: &[&BoxDetail], idx: usize, point: PricePoint) -> Option<f64> {
-    boxes.get(idx.saturating_sub(1)).map(|b| match point {
+    boxes.get(idx).map(|b| match point {
         PricePoint::HIGH => b.high,
         PricePoint::LOW => b.low,
         PricePoint::MID => (b.high + b.low) / 2.0,
