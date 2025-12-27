@@ -105,24 +105,28 @@ impl Deduplicator {
         structural.sort_by(|a, b| b.integer_value.abs().cmp(&a.integer_value.abs()));
 
         let entry_box_index = level as usize;
-        let structural: Vec<&BoxDetail> = structural
-            .into_iter()
+        let tracked_structural: Vec<&BoxDetail> = structural
+            .iter()
             .enumerate()
             .filter(|(idx, _)| *idx < entry_box_index)
-            .map(|(_, b)| b)
+            .map(|(_, b)| *b)
             .collect();
 
-        if structural.is_empty() {
+        if tracked_structural.is_empty() {
             return false;
         }
 
-        let pattern_key: String = pattern_sequence
+        // Create pattern key from tracked structural boxes only (not full pattern sequence)
+        // This ensures patterns with same structural boxes share the same key, even if they have different levels
+        // For example, L5 and L6 with same structural boxes (up to L5's entry) will share tracking
+        let structural_key: String = tracked_structural
             .iter()
-            .map(|v| v.to_string())
+            .map(|b| b.integer_value.to_string())
             .collect::<Vec<_>>()
             .join("_");
         
-        let tracking_key = format!("{}:{}", pair, pattern_key);
+        // Include signal type in key to separate LONG and SHORT
+        let tracking_key = format!("{}:{}:{}", pair, signal_type, structural_key);
 
         let mut tracked = self.structural_boxes.write().await;
         let pattern_tracked = tracked.entry(tracking_key.clone()).or_insert_with(HashMap::new);
@@ -130,7 +134,7 @@ impl Deduplicator {
         let mut all_match = true;
         let mut any_changed = false;
 
-        for box_detail in &structural {
+        for box_detail in &tracked_structural {
             let integer_value = box_detail.integer_value;
             let current_high = box_detail.high;
             let current_low = box_detail.low;

@@ -95,9 +95,9 @@
 **Example**:
 ```
 BTCUSD point = 10
-Box 1: +20000 / 10 = +2000
-Box 2: +17320 / 10 = +1732
-Box 3: -15000 / 10 = -1500
+Box 0: +20000 / 10 = +2000
+Box 1: +17320 / 10 = +1732
+Box 2: -15000 / 10 = -1500
 ```
 
 **Result**: Integer array like `[2000, 1732, -1500, -1299, 1125, ...]`
@@ -205,37 +205,39 @@ The service implements **four independent deduplication strategies** to prevent 
 
 ### Strategy 1: Level 1 First-Only Deduplication
 
-**Problem**: Multiple L1 signals can be generated for the same pattern sequence while box1 (largest box) remains unchanged. We only want the FIRST L1 signal, not subsequent ones.
+**Problem**: Multiple L1 signals can be generated for the same pattern sequence while box 0 (largest box) remains unchanged. We only want the FIRST L1 signal, not subsequent ones.
 
 **Example Scenario**:
 ```
 L1 Signal 1: Pattern [100, -87, -75, -65, -56, -49, -42, -37, 21]
-             Box1: high=1.85148, low=1.84333
+             Box 0: high=1.85148, low=1.84333
              Created at: 01:06:23
 
 L1 Signal 2: Pattern [100, -87, -75, -65, -56, -49, -42, 37]
-             Box1: high=1.85148, low=1.84333 (SAME)
+             Box 0: high=1.85148, low=1.84333 (SAME)
              Created at: 01:06:45
 
-Result: Signal 2 should be FILTERED because box1 unchanged
+Result: Signal 2 should be FILTERED because box 0 unchanged
 ```
 
 **Implementation**:
 - Track active L1 signals per pair and signal type (LONG/SHORT)
 - Key format: `"{pair}:{signal_type}"` (e.g., `"GBPCAD:LONG"`)
-- Store box1 high/low with each L1 signal
-- If new L1 signal has same box1 high/low → filter it
-- Clear L1 tracking when box1 changes (handled by global state management)
+- Store box 0 high/low with each L1 signal
+- If new L1 signal has same box 0 high/low → filter it
+- Clear L1 tracking when box 0 changes (handled by global state management)
 
 **Code Location**: `deduplication.rs::should_filter_l1()`
 
-**Reasoning**: When box1 is unchanged, subsequent L1 signals represent the same market state. The first signal is sufficient; additional signals would be redundant entries.
+**Note**: The internal tracking uses `box1_high` and `box1_low` field names, but these refer to box 0 (the largest box) in the 0-indexed system.
+
+**Reasoning**: When box 0 is unchanged, subsequent L1 signals represent the same market state. The first signal is sufficient; additional signals would be redundant entries.
 
 ---
 
 ### Strategy 2: Box Flip Detection (All Levels)
 
-**Problem**: If a box value flips between positive/negative more than 3 times while box1 remains unchanged, it indicates excessive noise/chop. Signals generated from such patterns are unreliable.
+**Problem**: If a box value flips between positive/negative more than 3 times while box 0 remains unchanged, it indicates excessive noise/chop. Signals generated from such patterns are unreliable.
 
 **Example Scenario**:
 ```
@@ -248,30 +250,32 @@ Box "16" flips:
   Update 4: "-16" (negative) ← flip 3
   Update 5: "16"  (positive) ← flip 4 (EXCEEDS LIMIT)
   
-Box1: high=1.85148, low=1.84333 (UNCHANGED throughout)
+Box 0: high=1.85148, low=1.84333 (UNCHANGED throughout)
 
-Result: Signal should be FILTERED (too many flips while box1 stable)
+Result: Signal should be FILTERED (too many flips while box 0 stable)
 ```
 
 **Implementation**:
 - Track last value and flip count for each box (by absolute value)
 - For each box in pattern sequence:
   - Detect sign flip: `(last > 0 && current < 0) || (last < 0 && current > 0)`
-  - If flipped AND box1 unchanged → increment flip count
+  - If flipped AND box 0 unchanged → increment flip count
   - If flip count > 3 → filter signal
-  - If box1 changed → reset flip count to 0
+  - If box 0 changed → reset flip count to 0
 
 **Code Location**: `deduplication.rs::should_filter_box_flips()`
 
-**Reasoning**: Excessive flipping while box1 is stable indicates market indecision/noise. Signals from such patterns have low reliability and should be filtered to reduce false positives.
+**Note**: This strategy is currently not implemented in the codebase but documented for completeness.
+
+**Reasoning**: Excessive flipping while box 0 is stable indicates market indecision/noise. Signals from such patterns have low reliability and should be filtered to reduce false positives.
 
 **Applies To**: ALL levels (L1, L2, L3, L4, L5, L6+)
 
 ---
 
-### Strategy 3: Higher Level Preference
+### Strategy 3: Higher Level Preference (Subset Removal)
 
-**Problem**: The same pattern sequence can match at multiple levels simultaneously. We should prefer the highest level since it represents deeper fractal structure.
+**Problem**: The same pattern sequence can match at multiple levels simultaneously. Lower-level patterns are often subsets of higher-level patterns. We should prefer the highest level since it represents deeper fractal structure.
 
 **Example Scenario**:
 ```
@@ -281,73 +285,115 @@ Detected as:
   - Level 5: Full sequence [6503, ..., 16] → Target: 1.89148
   - Level 4: Sub-sequence [1004, ..., 16] → Target: 1.85148
 
-Both detected at same timestamp with same box1 state.
+Both detected at same timestamp.
 
-Result: Keep Level 5, filter Level 4 (prefer higher level)
+Result: Keep Level 5, filter Level 4 (L4 is subset of L5)
 ```
 
 **Implementation**:
-- Track pattern history per pair: `pattern_key → PatternHistory`
-- Pattern key = sequence joined by underscores: `"6503_-5637_..._16"`
-- Store all levels seen for each pattern key
-- Store box1 high/low with pattern history
-- If same pattern key seen again:
-  - If box1 unchanged AND new level ≤ max existing level → filter
-  - If box1 unchanged AND new level > max existing level → keep new, filter old
-  - If box1 changed → treat as new pattern (reset history)
+- Sort patterns by level descending (highest first)
+- For each pattern, check if its values are a subset of any higher-level pattern already kept
+- If subset found → filter (duplicate)
+- If not a subset → keep (unique pattern)
+- Only compare patterns of the same signal type (LONG vs SHORT)
 
-**Code Location**: `deduplication.rs::should_prefer_higher_level()`
+**Code Location**: `deduplication.rs::remove_subset_duplicates()`
 
-**Reasoning**: Higher levels represent deeper market structure and stronger signals. When the same pattern appears at multiple levels, the highest level is most significant. Lower level duplicates are redundant.
+**Reasoning**: Higher levels represent deeper market structure and stronger signals. When a lower-level pattern is a subset of a higher-level pattern, the higher level contains all the information. Lower level duplicates are redundant.
 
 ---
 
-### Strategy 4: Recent Signal Deduplication
+### Strategy 4: Structural Boxes Deduplication
 
-**Problem**: The exact same signal (same pattern sequence, level, and prices) can be generated multiple times within a short time window due to box updates. We should only send it once.
+**Problem**: The same pattern sequence can be generated multiple times while the structural boxes (the boxes that define the pattern's structure) remain unchanged. We should only send one signal per pattern sequence while structural boxes' high/low values remain stable.
 
-**Example Scenario**:
+**Structural Boxes Definition**:
+- **LONG signals**: Structural boxes are all **positive** boxes in the pattern sequence
+- **SHORT signals**: Structural boxes are all **negative** boxes in the pattern sequence
+- Structural boxes are sorted by absolute value descending (box 0 = largest, box 1 = second largest, etc.)
+- **Entry box exclusion**: The entry box is at index `level` (0-indexed) in the sorted structural boxes array:
+  - **L1**: Tracks box 0 only (excludes entry box at index 1)
+  - **L2**: Tracks boxes 0-1 (excludes entry box at index 2)
+  - **L3**: Tracks boxes 0-2 (excludes entry box at index 3)
+  - **L4**: Tracks boxes 0-3 (excludes entry box at index 4)
+  - **L5**: Tracks boxes 0-4 (excludes entry box at index 5)
+  - **L6**: Tracks boxes 0-5 (excludes entry box at index 6)
+- The entry box is the **trigger point** and is **NOT** considered structural. It's excluded from tracking because it naturally shifts with price movement and is the trigger point, not part of the structural pattern.
+
+**Example Scenario - L5 SHORT Signal**:
 ```
-Signal 1:
-  Pattern: [-368, 319, 276, 239, 207, -116, 100, -65, 56, 49, 42, 37, -21]
-  Level: 3
-  Entry: 1.84361, Stop: 1.84382, Target: 1.8416
-  Timestamp: 2025-12-19 01:36:32.994
+SHORT Signal 1 (L5):
+  Pattern: [-3173, 2748, 2379, -1159, 1000, -488, 422, 366, -178, 154, 133, 115, 100, -49, 42, -24]
+  Structural boxes (negative, sorted by abs desc): -3173, -1159, -488, -178, -49, -24
+  Tracked boxes (0-4, excluding entry at index 5): -3173, -1159, -488, -178, -49
+  Entry box (index 5, not tracked): -24
+  Timestamp: 15:38:20.185
 
-Signal 2 (52 seconds later):
-  Pattern: [-368, 319, 276, 239, 207, -116, 100, -65, 56, 49, 42, 37, -21]
-  Level: 3
-  Entry: 1.84361, Stop: 1.84382, Target: 1.8416 (SAME PRICES)
-  Timestamp: 2025-12-19 01:37:24.505
+SHORT Signal 2 (L5, 20 seconds later):
+  Pattern: [-3173, 2748, 2379, -1159, 1000, -488, 422, 366, -178, 154, 133, 115, 100, -49, 42, -24]
+  Tracked boxes: -3173, -1159, -488, -178, -49 (SAME high/low)
+  Entry box: -24 (shifted from 2928.5→2928.2, but not checked)
+  Timestamp: 15:38:41.023
 
-Result: Signal 2 should be FILTERED (duplicate within time window)
+Result: Signal 2 should be FILTERED (all tracked structural boxes unchanged, entry box shift ignored)
+```
+
+**Example Scenario 2 - Structural Box Changed (L3 SHORT)**:
+```
+SHORT Signal 1 (L3):
+  Pattern: [-3173, -1159, -488, -178, -75, -10]
+  Structural boxes (negative, sorted): -3173, -1159, -488, -178, -75, -10
+  Tracked boxes (0-2, excluding entry at index 3): -3173, -1159, -488
+  Entry box (index 3, not tracked): -178
+  Structural box -488: high=2943.6, low=2894.8
+  Timestamp: 13:36:44.978
+
+SHORT Signal 2 (L3, later):
+  Pattern: [-3173, -1159, -488, -178, -75, -10] (SAME pattern)
+  Tracked boxes: -3173, -1159, -488
+  Structural box -488: high=2944.0, low=2895.2 (CHANGED)
+  Timestamp: 13:40:12.345
+
+Result: Signal 2 should be ALLOWED (tracked structural box -488 high/low changed, tracker reset)
 ```
 
 **Implementation**:
-- Track recently sent signals per pair
-- Key: `pattern_key + level + prices`
-- Time window: 5 minutes (300,000 ms)
-- Price tolerance: 0.0001 (accounts for floating-point precision)
-- Check before sending:
-  - If same pattern + level + prices (within tolerance) sent within 5 minutes → filter
-  - Otherwise → allow and add to recent signals
-- Auto-cleanup: Remove signals older than 5 minutes
+1. Filter structural boxes by signal type (positive for LONG, negative for SHORT)
+2. Sort structural boxes by absolute value descending (box 0 = largest, box 1 = second largest, etc.)
+3. Track boxes 0 through (level-1), excluding entry box at index `level`:
+   - L1: Track box 0 only
+   - L2: Track boxes 0-1
+   - L3: Track boxes 0-2
+   - L4: Track boxes 0-3
+   - L5: Track boxes 0-4
+   - L6: Track boxes 0-5
+4. Track structural boxes' high/low values per pattern sequence
+5. Key format: `"{pair}:{pattern_sequence}"` (e.g., `"ETHUSD:-3173_2748_2379_-1159_1000_-488_422_366_-178_154_133_115_100_-49_42_-24"`)
+6. For each tracked structural box:
+   - Store `integer_value → (high, low)` mapping
+7. Check before sending:
+   - If same pattern sequence seen before:
+     - If ALL tracked structural boxes' high/low unchanged → filter (duplicate)
+     - If ANY tracked structural box's high/low changed → allow (new pattern state, update tracking)
+   - If pattern sequence never seen → allow (first occurrence, create tracking)
+8. Tolerance: 0.00001 (accounts for floating-point precision)
+9. Entry box changes are ignored for deduplication purposes
 
-**Code Location**: `deduplication.rs::should_filter_recent_signal()`
+**Code Location**: `deduplication.rs::should_filter_structural_boxes()`
 
-**Reasoning**: Identical signals within a short time window are duplicates caused by box updates. Sending them multiple times would spam users. However, if prices change (even slightly), it's a legitimate new signal opportunity.
+**Reasoning**: Structural boxes define the pattern's core structure. When they remain unchanged, the pattern represents the same market state regardless of entry box changes. Only when tracked structural boxes' high/low values change does the pattern represent a new market state, warranting a new signal.
 
-**Why 5 Minutes**: Long enough to prevent duplicates from rapid box updates, short enough to allow legitimate new signals when market conditions change.
+**Key Insight**: The entry box is the trigger point and naturally shifts with price movement. It's not part of the structural pattern, so it's excluded from deduplication tracking. We track structural boxes from largest to the box before the entry box (boxes 0 through level-1). If ANY tracked structural box's high/low changes, the tracker resets for that specific pattern sequence, allowing a new signal. This ensures we don't spam duplicate signals while the pattern structure remains stable, but we do allow new signals when the underlying structure shifts.
 
 ---
 
 ## State Management
 
-### Global State Indicator: Box1
+### Global State Indicator: Box 0
 
-**Principle**: Box1 (largest box) high/low serves as the global state indicator for ALL levels.
+**Principle**: Box 0 (largest box, 0-indexed) high/low serves as the global state indicator for ALL levels.
 
-**Why Box1**: 
+**Why Box 0**: 
 - Most stable box (changes least frequently)
 - Represents the primary market direction
 - When it changes, market state has fundamentally shifted
@@ -355,19 +401,19 @@ Result: Signal 2 should be FILTERED (duplicate within time window)
 ### State Change Detection
 
 **Process**:
-1. Track box1 high/low per pair: `pair → (high, low)`
+1. Track box 0 high/low per pair: `pair → (high, low)`
 2. On each pattern check:
-   - Compare current box1 high/low with stored state
+   - Compare current box 0 high/low with stored state
    - If changed (tolerance: 0.00001) → **state change detected**
 
 **State Change Actions**:
-When box1 changes, immediately clear:
+When box 0 changes, immediately clear:
 - ✅ All box flip histories for that pair
 - ✅ All pattern histories for that pair  
 - ✅ All active L1 signals for that pair
-- ✅ Update box1 state to new values
+- ✅ Update box 0 state to new values
 
-**Code Location**: `deduplication.rs::should_filter_pattern()` (lines 90-104)
+**Code Location**: `deduplication.rs::should_filter_pattern()`
 
 ### Why This Works
 
@@ -383,15 +429,15 @@ When box1 changes, immediately clear:
 
 **Example**:
 ```
-State 1: Box1 = (1.85148, 1.84333)
-  - Track patterns, flips, L1 signals
+State 1: Box 0 = (1.85148, 1.84333)
+  - Track patterns, flips, L1 signals, structural boxes
   - Market moves, boxes update
-  - Box1 changes to (1.85200, 1.84400)
+  - Box 0 changes to (1.85200, 1.84400)
 
-State 2: Box1 = (1.85200, 1.84400)  
+State 2: Box 0 = (1.85200, 1.84400)  
   - ALL previous tracking cleared
   - Fresh tracking starts
-  - New patterns, flips, signals tracked from clean slate
+  - New patterns, flips, signals, structural boxes tracked from clean slate
 ```
 
 ---
@@ -411,57 +457,58 @@ Each level has specific rules for calculating entry, stop loss, and target price
 - `target_box`: Which box to use for target price
 - `target_point`: HIGH, LOW, or MID of target box
 
-### Box Ordering
+### Box Ordering (0-Indexed)
 
-Boxes are sorted by absolute value descending:
-- **Box 1**: Largest absolute value (primary direction)
-- **Box 2**: Second largest
-- **Box 3**: Third largest
+Boxes are sorted by absolute value descending and indexed starting from 0:
+- **Box 0**: Largest absolute value (primary direction)
+- **Box 1**: Second largest
+- **Box 2**: Third largest
+- **Box 3**: Fourth largest
 - ...and so on
 
 ### Trade Rules by Level
 
 | Level | Entry Box | Entry Point | Stop Box | Stop Point | Target Box | Target Point |
 |-------|-----------|-------------|----------|-----------|------------|--------------|
-| L1    | 2         | HIGH        | 2        | LOW       | 1          | HIGH         |
-| L2    | 3         | HIGH        | 3        | LOW       | 1          | HIGH         |
-| L3    | 4         | HIGH        | 4        | LOW       | 1          | HIGH         |
-| L4    | 5         | HIGH        | 5        | LOW       | 1          | HIGH         |
-| L5    | 6         | HIGH        | 6        | LOW       | 1          | HIGH         |
-| L6    | 7         | HIGH        | 7        | LOW       | 1          | HIGH         |
+| L1    | 1         | HIGH        | 1        | LOW       | 0          | HIGH         |
+| L2    | 2         | HIGH        | 2        | LOW       | 0          | HIGH         |
+| L3    | 3         | HIGH        | 3        | LOW       | 0          | HIGH         |
+| L4    | 4         | HIGH        | 4        | LOW       | 0          | HIGH         |
+| L5    | 5         | HIGH        | 5        | LOW       | 0          | HIGH         |
+| L6    | 6         | HIGH        | 6        | LOW       | 0          | HIGH         |
 
-**Note**: Rules are symmetric for LONG and SHORT, but entry/stop points are inverted for SHORT.
+**Note**: Rules are symmetric for LONG and SHORT, but entry/stop points are inverted for SHORT. All levels use Box 0 (largest box) for target.
 
 ### LONG Signal Rules
 
 **Entry**: Break above `entry_box` HIGH
 **Stop Loss**: `entry_box` LOW
-**Target**: Box 1 HIGH (full move potential)
+**Target**: Box 0 HIGH + Box 0 size (high + (high - low))
 
 **Example LONG L1**:
 ```
-Box 1: high = $98,000, low = $78,000
-Box 2: high = $97,000, low = $80,680
+Box 0: high = $98,000, low = $78,000 (largest box, index 0)
+Box 1: high = $97,000, low = $80,680 (second largest, index 1)
 
-Entry:     $97,000 (Box 2 high - break above to enter)
-Stop Loss: $80,680 (Box 2 low - if price falls here, exit)
-Target:   $98,000 (Box 1 high - take profit here)
+Entry:     $97,000 (Box 1 high - break above to enter)
+Stop Loss: $80,680 (Box 1 low - if price falls here, exit)
+Target:   $98,000 + ($98,000 - $78,000) = $118,000 (Box 0 high + box size)
 ```
 
 ### SHORT Signal Rules
 
 **Entry**: Break below `entry_box` LOW
 **Stop Loss**: `entry_box` HIGH
-**Target**: Box 1 LOW (full move potential)
+**Target**: Box 0 LOW - Box 0 size (low - (high - low))
 
 **Example SHORT L1**:
 ```
-Box 1: high = $98,000, low = $78,000
-Box 2: high = $97,000, low = $80,680
+Box 0: high = $98,000, low = $78,000 (largest box, index 0)
+Box 1: high = $97,000, low = $80,680 (second largest, index 1)
 
-Entry:     $80,680 (Box 2 low - break below to enter)
-Stop Loss: $97,000 (Box 2 high - if price rises here, exit)
-Target:   $78,000 (Box 1 low - take profit here)
+Entry:     $80,680 (Box 1 low - break below to enter)
+Stop Loss: $97,000 (Box 1 high - if price rises here, exit)
+Target:   $78,000 - ($98,000 - $78,000) = $58,000 (Box 0 low - box size)
 ```
 
 ### Risk/Reward Calculation
@@ -473,22 +520,27 @@ Target:   $78,000 (Box 1 low - take profit here)
 LONG L1:
   Entry: $97,000
   Stop:  $80,680
-  Target: $98,000
+  Target: $118,000 (Box 0 high + box size)
   
   Risk:   $97,000 - $80,680 = $16,320
-  Reward: $98,000 - $97,000 = $1,000
-  R:R = $1,000 / $16,320 = 0.061 (6.1% reward per unit risk)
+  Reward: $118,000 - $97,000 = $21,000
+  R:R = $21,000 / $16,320 = 1.29 (1.29x reward per unit risk)
 ```
 
 ### Signal Generation Process
 
-1. Filter patterns by level (only L1, L3, L4, L5, L6 generate signals - L2 is filtered)
+1. Filter patterns by level (all levels L1-L6 generate signals)
 2. For each pattern, find matching trade rule by level
-3. Extract boxes from pattern (sorted by absolute value)
-4. Calculate entry/stop/target using rule
+3. Extract boxes from pattern (sorted by absolute value descending, indexed 0-based)
+4. Calculate entry/stop/target using rule:
+   - Entry/Stop: Use box at index `level` (L1=box1, L2=box2, etc.)
+   - Target: Use box 0 (largest) and add/subtract box size
 5. Calculate risk/reward ratio
 6. Validate: All prices must be present and valid
-7. Create `SignalMessage` with trade opportunities
+7. Create `SignalMessage` with:
+   - `pattern_sequence`: Vec<i32> (integer values only)
+   - `data.box_details`: Vec<BoxDetail> (with high/low for each box)
+   - Trade opportunities
 
 **Code Location**: `signal.rs::generate_signals()`
 
@@ -496,13 +548,45 @@ LONG L1:
 
 ## Signal Tracking & Settlement
 
+### Data Storage Format
+
+**Pattern Sequence**:
+- Type: `Vec<i32>` (array of integers)
+- Content: Integer box values only (e.g., `[1000, -866, -750, -650, ...]`)
+- Purpose: Represents the pattern structure for matching and deduplication
+- Database: Stored as `integer[]` column in Supabase
+
+**Box Details**:
+- Type: `Vec<BoxDetail>` (array of box detail objects)
+- Content: Each `BoxDetail` contains:
+  - `integer_value: i32` - The box integer value
+  - `high: f64` - Box high price boundary
+  - `low: f64` - Box low price boundary
+  - `value: f64` - Box value (same as integer_value * point)
+- Purpose: Provides price context for each box in the pattern
+- Database: Stored as JSON array in Supabase `box_details` column
+- Frontend: Used to format pattern display with high/low values
+
+**Example**:
+```json
+{
+  "pattern_sequence": [1000, -866, -750, -650],
+  "box_details": [
+    {"integer_value": 1000, "high": 2994.10, "low": 2894.10, "value": 1000.0},
+    {"integer_value": -866, "high": 2934.50, "low": 2800.20, "value": -866.0},
+    {"integer_value": -750, "high": 2850.00, "low": 2750.00, "value": -750.0},
+    {"integer_value": -650, "high": 2800.00, "low": 2700.00, "value": -650.0}
+  ]
+}
+```
+
 ### Active Signal Tracking
 
 **Purpose**: Monitor signals until they hit stop loss or target
 
 **Storage**: 
 - In-memory: `SignalTracker` maintains active signals per pair
-- Persistent: Supabase `active_signals` table
+- Persistent: Supabase `signals` table with both `pattern_sequence` and `box_details`
 
 **Signal Lifecycle**:
 1. **Created**: Signal generated and added to tracker
@@ -556,32 +640,34 @@ When a signal is settled:
 
 **Scenario**: Same sequence matches L4 and L5 simultaneously
 
-**Handling**: Strategy 3 (Higher Level Preference) filters lower level
+**Handling**: Strategy 3 (Higher Level Preference) filters lower level via `remove_subset_duplicates()`
 
 **Example**:
 ```
 Pattern: [6503, ..., 16]
 - Detected as L5 → Keep
-- Detected as L4 → Filter (L5 already exists)
+- Detected as L4 → Filter (L5 already exists, L4 is subset)
 ```
 
-### Case 3: Box1 Changes During Pattern Detection
+### Case 3: Box 0 Changes During Pattern Detection
 
-**Scenario**: Box1 high/low changes between pattern checks
+**Scenario**: Box 0 high/low changes between pattern checks
 
 **Handling**: 
-- State change detected → clear all tracking
+- State change detected → clear all tracking (L1 signals, box flip histories)
 - New patterns tracked with fresh state
 - Previous patterns invalidated (different market state)
+- Structural boxes tracking persists (tracked per pattern sequence, not cleared on box 0 change)
 
-### Case 4: Rapid Box Updates
+### Case 4: Duplicate Pattern Sequences
 
-**Scenario**: Multiple box updates within milliseconds
+**Scenario**: Same pattern sequence detected multiple times with same structural boxes
 
 **Handling**: 
-- Recent signal deduplication (5-minute window)
-- Only first signal sent if prices identical
-- Subsequent signals filtered until prices change or window expires
+- Strategy 4 (Structural Boxes Deduplication) filters duplicates
+- Only first signal sent if all structural boxes' high/low unchanged
+- Subsequent signals filtered until any structural box changes
+- No time-based window - purely based on structural box state
 
 ### Case 5: Invalid Trade Opportunities
 
@@ -730,8 +816,9 @@ MAIN_SERVER_URL=https://server.rthmn.com
 - **Pattern Storage**: ~50-100MB (depends on path lengths)
 - **Deduplication State**: Bounded by:
   - Active pairs (typically 10-50)
-  - Recent signals (5-minute window, ~100-1000 per pair)
-  - Pattern histories (cleared on box1 change)
+  - Structural boxes tracking (per pattern sequence, grows with unique patterns)
+  - L1 signal tracking (cleared on box 0 change)
+  - Box 0 state tracking (one entry per pair)
 
 ### Throughput
 - **Box Updates**: Processed in <1ms per update
@@ -838,11 +925,17 @@ docker run -p 3003:3003 --env-file .env signals-rthmn
 1. ✅ Processes real-time box data via WebSocket
 2. ✅ Matches against 1.5M+ pre-computed patterns
 3. ✅ Calculates signal levels based on pattern reversals
-4. ✅ Applies 4 independent deduplication strategies
-5. ✅ Generates trade opportunities with entry/stop/target
-6. ✅ Tracks signals until settlement
-7. ✅ Forwards valid signals to main server
-8. ✅ Maintains bounded memory via state-based cleanup
+4. ✅ Applies 4 independent deduplication strategies:
+   - L1 First-Only (box 0 state-based)
+   - Box Flip Detection (noise filtering)
+   - Higher Level Preference (subset removal)
+   - Structural Boxes Deduplication (tracks structural boxes 0 through level-1, excludes entry box at index level)
+5. ✅ Generates trade opportunities with 0-indexed box rules (L1=box1 entry/stop, box0 target)
+6. ✅ Stores signals with pattern_sequence (integers) and box_details (high/low) separately
+7. ✅ Tracks signals until settlement
+8. ✅ Forwards valid signals to main server
+9. ✅ Maintains bounded memory via state-based cleanup
 
 The service is designed for **high performance**, **low latency**, and **reliable signal generation** while preventing duplicate or invalid signals through comprehensive deduplication.
+
 
