@@ -26,7 +26,6 @@ pub struct Deduplicator {
     active_l1_signals: RwLock<HashMap<String, L1Signal>>,
     recent_signals: RwLock<HashMap<String, Vec<RecentSignal>>>,
     box1_states: RwLock<HashMap<String, (f64, f64)>>,
-    // Track structural boxes per pair: pair -> (integer_value -> (high, low))
     structural_boxes: RwLock<HashMap<String, HashMap<i32, (f64, f64)>>>,
 }
 
@@ -85,32 +84,38 @@ impl Deduplicator {
         false
     }
 
-    /// Check if signal should be filtered based on structural boxes tracking
-    /// Returns true if duplicate (all structural boxes unchanged), false if new pattern
-    /// Tracks structural boxes per pattern sequence to ensure only one signal per pattern
     pub async fn should_filter_structural_boxes(
         &self,
         pair: &str,
         pattern_sequence: &[i32],
         box_details: &[BoxDetail],
         signal_type: crate::types::SignalType,
+        level: u32,
     ) -> bool {
         const TOLERANCE: f64 = 0.00001;
 
-        // Extract structural boxes: positive for LONG, negative for SHORT
-        let structural: Vec<&BoxDetail> = box_details
+        let mut structural: Vec<&BoxDetail> = box_details
             .iter()
             .filter(|b| match signal_type {
                 crate::types::SignalType::LONG => b.integer_value > 0,
                 crate::types::SignalType::SHORT => b.integer_value < 0,
             })
             .collect();
+        
+        structural.sort_by(|a, b| b.integer_value.abs().cmp(&a.integer_value.abs()));
+
+        let entry_box_index = level as usize;
+        let structural: Vec<&BoxDetail> = structural
+            .into_iter()
+            .enumerate()
+            .filter(|(idx, _)| *idx < entry_box_index)
+            .map(|(_, b)| b)
+            .collect();
 
         if structural.is_empty() {
-            return false; // No structural boxes, allow signal
+            return false;
         }
 
-        // Create pattern key from sequence for tracking per pattern
         let pattern_key: String = pattern_sequence
             .iter()
             .map(|v| v.to_string())
@@ -122,7 +127,6 @@ impl Deduplicator {
         let mut tracked = self.structural_boxes.write().await;
         let pattern_tracked = tracked.entry(tracking_key.clone()).or_insert_with(HashMap::new);
 
-        // Check if all structural boxes match tracked values for this specific pattern
         let mut all_match = true;
         let mut any_changed = false;
 
@@ -138,23 +142,20 @@ impl Deduplicator {
                 if high_changed || low_changed {
                     any_changed = true;
                     all_match = false;
-                    // Update tracking with new values
                     pattern_tracked.insert(integer_value, (current_high, current_low));
                 }
             } else {
-                // New structural box for this pattern, add to tracking
                 all_match = false;
                 pattern_tracked.insert(integer_value, (current_high, current_low));
             }
         }
 
-        // If any structural box changed, update tracking and allow signal
         if any_changed {
-            false // Allow signal (structural boxes changed)
+            false
         } else if all_match && !pattern_tracked.is_empty() {
-            true // Filter signal (all structural boxes unchanged for this pattern)
+            true
         } else {
-            false // Allow signal (first time seeing this pattern)
+            false
         }
     }
 
@@ -196,13 +197,8 @@ impl Deduplicator {
         active_l1.remove(&key);
     }
 
-    /// Remove duplicate patterns where lower-level patterns are subsets of higher-level ones
-    /// If L2's values are all in L3, discard L2. If L3's values are all in L4, discard L3, etc.
-    /// Returns only the unique patterns, keeping the highest level when duplicates exist
     pub fn remove_subset_duplicates(&self, patterns: Vec<PatternMatch>) -> Vec<PatternMatch> {
         let mut unique_patterns = Vec::new();
-        
-        // Sort by level descending (highest first) so we check against higher levels first
         let mut sorted_patterns = patterns;
         sorted_patterns.sort_by(|a, b| b.level.cmp(&a.level));
         
@@ -210,19 +206,13 @@ impl Deduplicator {
             let pattern_values: HashSet<i32> = pattern.traversal_path.path.iter().copied().collect();
             let pattern_signal_type = pattern.traversal_path.signal_type;
             
-            // Check if this pattern's values are all contained in any higher-level pattern we've already kept
             let is_duplicate = unique_patterns.iter().any(|existing: &PatternMatch| {
-                // Only compare patterns of the same signal type
                 if existing.traversal_path.signal_type != pattern_signal_type {
                     return false;
                 }
-                
-                // Only check if existing has higher level
                 if existing.level <= pattern.level {
                     return false;
                 }
-                
-                // Check if all values in this pattern are contained in the higher-level pattern
                 let existing_values: HashSet<i32> = existing.traversal_path.path.iter().copied().collect();
                 pattern_values.is_subset(&existing_values)
             });

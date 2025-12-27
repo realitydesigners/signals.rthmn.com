@@ -362,6 +362,7 @@ async fn process_box_update(state: &Arc<AppState>, pair: &str, data: &serde_json
                 &signal.pattern_sequence,
                 &signal.data.box_details,
                 signal_type_enum,
+                signal.level,
             )
             .await
         {
