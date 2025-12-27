@@ -199,7 +199,7 @@ pub struct SignalGenerator;
 impl SignalGenerator {
     pub fn generate_signals(&self, pair: &str, patterns: &[PatternMatch], _boxes: &[crate::types::Box], _price: f64) -> Vec<SignalMessage> {
         patterns.iter()
-            .filter(|p| get_rules(p.traversal_path.signal_type).iter().any(|r| r.level == p.level))
+            .filter(|p| get_rules(p.traversal_path.signal_type()).iter().any(|r| r.level == p.level))
             .map(|p| self.create_signal(pair, p))
             .collect()
     }
@@ -209,9 +209,9 @@ impl SignalGenerator {
         let path_str = pattern.traversal_path.path.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("_");
         
         SignalMessage {
-            signal_id: format!("{}_{}_{}_{}_{}", pair, pattern.traversal_path.signal_type, path_str, pattern.level, now),
+            signal_id: format!("{}_{}_{}_{}_{}", pair, pattern.traversal_path.signal_type(), path_str, pattern.level, now),
             pair: pair.to_string(),
-            signal_type: pattern.traversal_path.signal_type.to_string(),
+            signal_type: pattern.traversal_path.signal_type().to_string(),
             level: pattern.level,
             pattern_sequence: pattern.traversal_path.path.clone(),
             timestamp: now,
@@ -225,7 +225,7 @@ impl SignalGenerator {
     }
 
     pub fn calculate_opportunities(&self, pattern: &PatternMatch) -> Vec<TradeOpportunity> {
-        let sig_type = pattern.traversal_path.signal_type;
+        let sig_type = pattern.traversal_path.signal_type();
         let mut primary: Vec<&BoxDetail> = pattern.box_details.iter()
             .filter(|b| matches!(sig_type, SignalType::LONG if b.integer_value > 0) || matches!(sig_type, SignalType::SHORT if b.integer_value < 0))
             .collect();

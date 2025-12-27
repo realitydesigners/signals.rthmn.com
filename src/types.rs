@@ -7,7 +7,13 @@ pub struct Box { pub high: f64, pub low: f64, pub value: f64 }
 pub struct BoxData { pub pair: String, pub boxes: Vec<Box>, pub price: f64, pub timestamp: String }
 
 #[derive(Debug, Clone)]
-pub struct TraversalPath { pub path: Vec<i32>, pub length: usize, pub starting_point: i32, pub signal_type: SignalType }
+pub struct TraversalPath { pub path: Vec<i32> }
+
+impl TraversalPath {
+    pub fn length(&self) -> usize { self.path.len() }
+    pub fn starting_point(&self) -> i32 { self.path[0] }
+    pub fn signal_type(&self) -> SignalType { if self.path[0] > 0 { SignalType::LONG } else { SignalType::SHORT } }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum SignalType { #[default] LONG, SHORT }

@@ -65,99 +65,66 @@ impl SignalTracker {
             .or_insert_with(Vec::new)
             .push(signal);
 
-        info!(
-            "[Tracker] Added active signal: {} {} L{} (total: {})",
-            pair,
-            signal_type,
-            level,
-            active.values().map(|v| v.len()).sum::<usize>()
-        );
-
+        let total = active.values().map(|v| v.len()).sum::<usize>();
         drop(active);
+        info!("[Tracker] Added active signal: {} {} L{} (total: {})", pair, signal_type, level, total);
     }
 
     /// Check price against all active signals for a pair
     /// Returns list of settlements that occurred
     pub async fn check_price(&self, pair: &str, current_price: f64) -> Vec<Settlement> {
-        let mut settlements = Vec::new();
-
-        // First, collect settlements while holding read lock
-        let to_settle: Vec<(usize, &'static str, f64)>;
-        {
+        let to_settle: Vec<(usize, &'static str, f64)> = {
             let active = self.active.read().await;
             let Some(signals) = active.get(pair) else {
                 return vec![];
             };
 
-            to_settle = signals
+            signals
                 .iter()
                 .enumerate()
                 .filter_map(|(idx, signal)| {
-                    let settlement = match signal.signal_type {
-                        SignalType::LONG => {
-                            if current_price <= signal.stop_loss {
-                                Some(("failed", current_price))
-                            } else if current_price >= signal.target {
-                                Some(("success", current_price))
-                            } else {
-                                None
-                            }
-                        }
-                        SignalType::SHORT => {
-                            if current_price >= signal.stop_loss {
-                                Some(("failed", current_price))
-                            } else if current_price <= signal.target {
-                                Some(("success", current_price))
-                            } else {
-                                None
-                            }
-                        }
+                    let (hit_stop, hit_target) = match signal.signal_type {
+                        SignalType::LONG => (current_price <= signal.stop_loss, current_price >= signal.target),
+                        SignalType::SHORT => (current_price >= signal.stop_loss, current_price <= signal.target),
                     };
-                    settlement.map(|(status, price)| (idx, status, price))
+                    if hit_stop {
+                        Some((idx, "failed", current_price))
+                    } else if hit_target {
+                        Some((idx, "success", current_price))
+                    } else {
+                        None
+                    }
                 })
-                .collect();
-        }
+                .collect()
+        };
 
         if to_settle.is_empty() {
             return vec![];
         }
 
-        // Now process settlements with write lock
-        {
-            let mut active = self.active.write().await;
-            let Some(signals) = active.get_mut(pair) else {
-                return vec![];
-            };
+        let mut settlements = Vec::new();
+        let mut active = self.active.write().await;
+        let Some(signals) = active.get_mut(pair) else {
+            return vec![];
+        };
 
-            // Process in reverse order to preserve indices
-            for (idx, status, settled_price) in to_settle.into_iter().rev() {
-                if idx < signals.len() {
-                    let signal = signals.remove(idx);
-
-                    info!(
-                        "[Tracker] SETTLED: {} {} L{} → {} @ {:.5}",
-                        signal.pair, signal.signal_type, signal.level, status, settled_price
-                    );
-
-                    settlements.push(Settlement {
-                        signal,
-                        status,
-                        settled_price,
-                    });
-                }
+        for (idx, status, settled_price) in to_settle.into_iter().rev() {
+            if idx < signals.len() {
+                let signal = signals.remove(idx);
+                info!(
+                    "[Tracker] SETTLED: {} {} L{} → {} @ {:.5}",
+                    signal.pair, signal.signal_type, signal.level, status, settled_price
+                );
+                settlements.push(Settlement { signal, status, settled_price });
             }
         }
 
-        // Process each settlement (update Supabase only)
+        drop(active);
+
         for settlement in &settlements {
-            // Update Supabase status with settlement price and timestamp
             if let Err(e) = self
                 .supabase
-                .update_signal_status(
-                    &settlement.signal.signal_id,
-                    settlement.status,
-                    settlement.settled_price,
-                )
+                .update_signal_status(&settlement.signal.signal_id, settlement.status, settlement.settled_price)
                 .await
             {
                 tracing::warn!("[Tracker] Failed to settle signal in Supabase: {}", e);

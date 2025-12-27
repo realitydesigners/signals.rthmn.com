@@ -1,6 +1,6 @@
 use crate::instruments::get_instrument_config;
 use crate::patterns::{BOXES, STARTING_POINTS};
-use crate::types::{Box, BoxDetail, PatternMatch, SignalType, TraversalPath};
+use crate::types::{Box, BoxDetail, PatternMatch, TraversalPath};
 use std::collections::HashSet;
 
 #[derive(Default)]
@@ -11,19 +11,14 @@ pub struct MarketScanner {
 impl MarketScanner {
     pub fn initialize(&mut self) {
         self.all_paths.clear();
+        // Only generate LONG paths (positive), check inverted version during detection
         for &sp in STARTING_POINTS {
             self.traverse_all_paths(sp, vec![sp], sp);
-            self.traverse_all_paths(-sp, vec![-sp], -sp);
         }
     }
 
-    fn make_path(&self, path: Vec<i32>, start: i32) -> TraversalPath {
-        TraversalPath {
-            length: path.len(),
-            signal_type: if start > 0 { SignalType::LONG } else { SignalType::SHORT },
-            path,
-            starting_point: start,
-        }
+    fn make_path(&self, path: Vec<i32>, _start: i32) -> TraversalPath {
+        TraversalPath { path }
     }
 
     fn traverse_all_paths(&mut self, current_key: i32, current_path: Vec<i32>, original_start: i32) {
@@ -36,7 +31,7 @@ impl MarketScanner {
             let adjusted: Vec<i32> = if current_key > 0 {
                 pattern.clone()
             } else {
-                pattern.iter().map(|&v| -v).collect()
+                pattern.iter().copied().map(|v| -v).collect()
             };
             let last = *adjusted.last().unwrap();
 
@@ -62,6 +57,10 @@ impl MarketScanner {
         self.all_paths.len()
     }
 
+    pub fn get_paths(&self) -> &[TraversalPath] {
+        &self.all_paths
+    }
+
     pub fn detect_patterns(&self, pair: &str, boxes: &[Box]) -> Vec<PatternMatch> {
         if boxes.is_empty() { return vec![]; }
 
@@ -69,14 +68,27 @@ impl MarketScanner {
         let integer_values: Vec<i32> = boxes.iter().map(|b| (b.value / point).round() as i32).collect();
         let value_set: HashSet<i32> = integer_values.iter().copied().collect();
 
-        self.all_paths.iter()
-            .filter(|path| {
-                let first = path.path[0].abs();
-                (value_set.contains(&first) || value_set.contains(&(-first)))
-                    && path.path.iter().all(|v| value_set.contains(v))
-            })
-            .map(|path| self.create_pattern_match(pair, path, boxes, &integer_values))
-            .collect()
+        let mut matches = Vec::new();
+        
+        for path in &self.all_paths {
+            // Check LONG pattern (original - all paths are now LONG)
+            let first = path.path[0];
+            if value_set.contains(&first) && path.path.iter().all(|v| value_set.contains(v)) {
+                matches.push(self.create_pattern_match(pair, path, boxes, &integer_values));
+            }
+            
+            // Check SHORT pattern (inverted) - flip all values
+            let inverted_first = -first;
+            if value_set.contains(&inverted_first) {
+                let inverted_path: Vec<i32> = path.path.iter().copied().map(|v| -v).collect();
+                if inverted_path.iter().all(|v| value_set.contains(v)) {
+                    let inverted_traversal = TraversalPath { path: inverted_path };
+                    matches.push(self.create_pattern_match(pair, &inverted_traversal, boxes, &integer_values));
+                }
+            }
+        }
+        
+        matches
     }
 
     fn create_pattern_match(&self, pair: &str, traversal: &TraversalPath, boxes: &[Box], integer_values: &[i32]) -> PatternMatch {
@@ -111,7 +123,7 @@ impl MarketScanner {
             let Some(patterns) = BOXES.get(&key.abs()).filter(|p| !p.is_empty()) else { break };
 
             let found = patterns.iter().find_map(|pattern| {
-                let adjusted: Vec<i32> = if key > 0 { pattern.clone() } else { pattern.iter().map(|&v| -v).collect() };
+                let adjusted: Vec<i32> = if key > 0 { pattern.clone() } else { pattern.iter().copied().map(|v| -v).collect() };
                 let end = idx + 1 + adjusted.len();
                 (end <= path.len() && path[idx + 1..end] == adjusted).then(|| (end - 1, *adjusted.last().unwrap()))
             });

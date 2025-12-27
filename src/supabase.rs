@@ -81,12 +81,9 @@ impl SupabaseClient {
             .await?;
 
         if !response.status().is_success() {
-            let status_code = response.status();
+            let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            warn!(
-                "[Supabase] Failed to insert signal {}: {} - {}",
-                payload.signal_id, status_code, body
-            );
+            warn!("[Supabase] Failed to insert signal {}: {} - {}", payload.signal_id, status, body);
             return Ok(());
         }
 
@@ -128,12 +125,9 @@ impl SupabaseClient {
                 signal_id, status, settled_price
             );
         } else {
-            let status_code = response.status();
+            let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            warn!(
-                "[Supabase] Failed to settle signal {}: {} - {}",
-                signal_id, status_code, body
-            );
+            warn!("[Supabase] Failed to settle signal {}: {} - {}", signal_id, status, body);
         }
 
         Ok(())

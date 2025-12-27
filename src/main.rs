@@ -4,7 +4,7 @@ use signals_rthmn::{
     signal::SignalGenerator,
     supabase::SupabaseClient,
     tracker::{ActiveSignal, SignalTracker},
-    types::{BoxData, SignalMessage, SignalType},
+    types::{SignalMessage, SignalType},
 };
 use axum::{
     extract::{
@@ -17,7 +17,7 @@ use axum::{
 };
 use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
-use std::{collections::HashMap, env, sync::Arc};
+use std::{env, sync::Arc};
 use tokio::sync::{mpsc, RwLock};
 use tower_http::cors::{Any, CorsLayer};
 use tracing::{debug, info, warn};
@@ -27,7 +27,6 @@ pub struct AppState {
     generator: SignalGenerator,
     tracker: SignalTracker,
     deduplicator: Deduplicator,
-    box_data: RwLock<HashMap<String, BoxData>>,
     signals_sent: RwLock<u64>,
     main_server_url: String,
     signal_tx: mpsc::Sender<SignalMessage>,
@@ -77,16 +76,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         generator: SignalGenerator::default(),
         tracker,
         deduplicator: Deduplicator::new(),
-        box_data: RwLock::new(HashMap::new()),
         signals_sent: RwLock::new(0),
         main_server_url,
         signal_tx,
     });
 
-    // HTTP client that forwards raw signals to main server immediately
-    let s = Arc::clone(&state);
+    let state_clone = Arc::clone(&state);
     tokio::spawn(async move {
-        main_server_forwarder(s, auth_token, signal_rx).await;
+        main_server_forwarder(state_clone, auth_token, signal_rx).await;
     });
 
     // HTTP + WebSocket server
@@ -135,11 +132,7 @@ async fn status(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
     }))
 }
 
-/// WebSocket handler - receives box updates from boxes.rthmn.com
-async fn ws_handler(
-    ws: WebSocketUpgrade,
-    State(state): State<Arc<AppState>>,
-) -> impl IntoResponse {
+async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> impl IntoResponse {
     info!("WebSocket upgrade request received");
     ws.on_upgrade(|socket| {
         info!("WebSocket upgrade completed, starting handler");
@@ -196,18 +189,12 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     info!("WebSocket client disconnected");
 }
 
-/// Forwards raw signals to main server via HTTP (no batching)
-async fn main_server_forwarder(
-    state: Arc<AppState>,
-    token: String,
-    mut signal_rx: mpsc::Receiver<SignalMessage>,
-) {
+async fn main_server_forwarder(state: Arc<AppState>, token: String, mut signal_rx: mpsc::Receiver<SignalMessage>) {
     let client = reqwest::Client::new();
-    loop {
-        let Some(signal) = signal_rx.recv().await else { break };
-
-        let url = format!("{}/signals/raw", state.main_server_url.trim_end_matches('/'));
-        let response = client
+    let url = format!("{}/signals/raw", state.main_server_url.trim_end_matches('/'));
+    
+    while let Some(signal) = signal_rx.recv().await {
+        let result = client
             .post(&url)
             .header("Authorization", format!("Bearer {}", token))
             .header("Content-Type", "application/json")
@@ -215,23 +202,13 @@ async fn main_server_forwarder(
             .send()
             .await;
 
-        match response {
+        match result {
             Ok(resp) if resp.status().is_success() => {
                 *state.signals_sent.write().await += 1;
-                info!(
-                    "Forwarded raw signal to main server: {} {} L{}",
-                    signal.pair, signal.signal_type, signal.level
-                );
+                info!("Forwarded raw signal to main server: {} {} L{}", signal.pair, signal.signal_type, signal.level);
             }
-            Ok(resp) => {
-                warn!(
-                    "Failed to forward raw signal to main server: {}",
-                    resp.status()
-                );
-            }
-            Err(e) => {
-                warn!("Failed to forward raw signal to main server: {}", e);
-            }
+            Ok(resp) => warn!("Failed to forward raw signal to main server: {}", resp.status()),
+            Err(e) => warn!("Failed to forward raw signal to main server: {}", e),
         }
     }
 }
@@ -242,26 +219,10 @@ async fn process_box_update(state: &Arc<AppState>, pair: &str, data: &serde_json
         .and_then(|v| serde_json::from_value(v.clone()).ok())
         .unwrap_or_default();
     let price = data.get("price").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let timestamp = data
-        .get("timestamp")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
 
     if boxes.is_empty() {
         return;
     }
-
-    // Store box data
-    state.box_data.write().await.insert(
-        pair.to_string(),
-        BoxData {
-            pair: pair.to_string(),
-            boxes: boxes.clone(),
-            price,
-            timestamp,
-        },
-    );
 
     // CHECK ACTIVE SIGNALS AGAINST CURRENT PRICE
     // This will settle any signals that hit their SL or TP
@@ -299,14 +260,9 @@ async fn process_box_update(state: &Arc<AppState>, pair: &str, data: &serde_json
 
     let timestamp_ms = chrono::Utc::now().timestamp_millis();
 
-    // Filter patterns through deduplicator
     let mut filtered_patterns = Vec::new();
     for pattern in &all_patterns {
-        if !state
-            .deduplicator
-            .should_filter_pattern(pair, pattern, &boxes, timestamp_ms)
-            .await
-        {
+        if !state.deduplicator.should_filter_pattern(pair, pattern, &boxes, timestamp_ms).await {
             filtered_patterns.push(pattern.clone());
         }
     }
@@ -318,93 +274,38 @@ async fn process_box_update(state: &Arc<AppState>, pair: &str, data: &serde_json
     
     info!("{}: {} pattern(s) passed deduplication", pair, filtered_patterns.len());
 
-    // Remove duplicates where lower-level patterns are subsets of higher-level ones
-    let filtered_count = filtered_patterns.len();
     let unique_patterns = state.deduplicator.remove_subset_duplicates(filtered_patterns);
-    let grouped_count = filtered_count - unique_patterns.len();
-    if grouped_count > 0 {
-        info!("{} @ ${:.2} - {} pattern(s) after subset deduplication (removed {} lower-level duplicates)", 
-            pair, price, unique_patterns.len(), grouped_count);
-    } else {
-        info!("{} @ ${:.2} - {} pattern(s) after deduplication", pair, price, unique_patterns.len());
-    }
+    info!("{} @ ${:.2} - {} pattern(s) after deduplication", pair, price, unique_patterns.len());
 
-    for signal in state
-        .generator
-        .generate_signals(pair, &unique_patterns, &boxes, price)
-    {
-        // Find a valid trade opportunity
-        let valid_trade = signal
-            .data
-            .trade_opportunities
-            .iter()
-            .find(|t| t.is_valid);
-
-        let Some(trade) = valid_trade else {
+    for signal in state.generator.generate_signals(pair, &unique_patterns, &boxes, price) {
+        let Some(trade) = signal.data.trade_opportunities.iter().find(|t| t.is_valid) else {
             continue;
         };
+
+        let signal_type_enum = match signal.signal_type.as_str() {
+            "LONG" => SignalType::LONG,
+            _ => SignalType::SHORT,
+        };
+        
+        if state.deduplicator.should_filter_structural_boxes(pair, &signal.data.box_details, signal_type_enum, signal.level).await {
+            info!("FILTERED: {} {} L{} - duplicate signal (structural boxes unchanged)", signal.pair, signal.signal_type, signal.level);
+            continue;
+        }
 
         let entry = trade.entry.unwrap_or(0.0);
         let stop_loss = trade.stop_loss.unwrap_or(0.0);
         let target = trade.target.unwrap_or(0.0);
 
-        // Check if signal should be filtered based on structural boxes
-        let signal_type_enum = if signal.signal_type == "LONG" {
-            SignalType::LONG
-        } else {
-            SignalType::SHORT
-        };
-        
-        if state
-            .deduplicator
-            .should_filter_structural_boxes(
-                pair,
-                &signal.pattern_sequence,
-                &signal.data.box_details,
-                signal_type_enum,
-                signal.level,
-            )
-            .await
-        {
-            info!(
-                "FILTERED: {} {} L{} - duplicate signal (structural boxes unchanged)",
-                signal.pair, signal.signal_type, signal.level
-            );
-            continue;
-        }
-
-        // Log the signal details
-        info!(
-            "SIGNAL: {} {} L{} {:?}",
-            signal.pair, signal.signal_type, signal.level, signal.pattern_sequence
-        );
+        info!("SIGNAL: {} {} L{} {:?}", signal.pair, signal.signal_type, signal.level, signal.pattern_sequence);
         for (i, b) in signal.data.box_details.iter().enumerate() {
-            info!(
-                "  Box {}: {} H:{:.5} L:{:.5}",
-                i + 1,
-                b.integer_value,
-                b.high,
-                b.low
-            );
+            info!("  Box {}: {} H:{:.5} L:{:.5}", i, b.integer_value, b.high, b.low);
         }
-        info!(
-            "  {} E:{:.5} S:{:.5} T:{:.5} R:R:{:.2}",
-            trade.rule_id,
-            entry,
-            stop_loss,
-            target,
-            trade.risk_reward_ratio.unwrap_or(0.0)
-        );
+        info!("  {} E:{:.5} S:{:.5} T:{:.5} R:R:{:.2}", trade.rule_id, entry, stop_loss, target, trade.risk_reward_ratio.unwrap_or(0.0));
 
-        // Create active signal for tracking
         let active_signal = ActiveSignal {
             signal_id: signal.signal_id.clone(),
             pair: pair.to_string(),
-            signal_type: if signal.signal_type == "LONG" {
-                SignalType::LONG
-            } else {
-                SignalType::SHORT
-            },
+            signal_type: signal_type_enum,
             level: signal.level,
             entry,
             stop_loss,
@@ -415,10 +316,7 @@ async fn process_box_update(state: &Arc<AppState>, pair: &str, data: &serde_json
             created_at: signal.timestamp,
         };
 
-        // Add to tracker (writes to Convex)
         state.tracker.add_signal(active_signal).await;
-
-        // Immediately forward raw signal JSON to the main server (no batching)
         let _ = state.signal_tx.send(signal).await;
     }
 }

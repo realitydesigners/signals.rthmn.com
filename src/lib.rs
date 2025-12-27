@@ -6,3 +6,6 @@ pub mod signal;
 pub mod supabase;
 pub mod tracker;
 pub mod types;
+
+// Re-export for tests
+pub use scanner::MarketScanner;
