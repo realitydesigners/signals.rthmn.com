@@ -41,7 +41,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("==================================================");
     info!("  SIGNALS.RTHMN.COM - Rust Edition");
-    info!("  Supabase-only signals + server-side matching");
     info!("==================================================");
 
     let port: u16 = env::var("PORT")
@@ -51,20 +50,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let main_server_url =
         env::var("MAIN_SERVER_URL").unwrap_or("https://server.rthmn.com".into());
     let auth_token = env::var("SUPABASE_SERVICE_ROLE_KEY").expect("SUPABASE_SERVICE_ROLE_KEY required");
-
-    // Supabase configuration
     let supabase_url = env::var("SUPABASE_URL").expect("SUPABASE_URL required");
     let supabase_key = auth_token.clone();
 
     info!("Supabase URL: {}", supabase_url);
     info!("Main server URL: {}", main_server_url);
 
-    // Initialize scanner
     let mut scanner = MarketScanner::default();
     scanner.initialize();
     info!("MarketScanner initialized with {} paths", scanner.path_count());
 
-    // Initialize clients
     let supabase = SupabaseClient::new(&supabase_url, &supabase_key);
     let tracker = SignalTracker::new(supabase);
     info!("SignalTracker initialized");
@@ -86,7 +81,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         main_server_forwarder(state_clone, auth_token, signal_rx).await;
     });
 
-    // HTTP + WebSocket server
     let app = Router::new()
         .route("/health", get(health))
         .route("/api/status", get(status))
@@ -144,7 +138,6 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     let (mut sender, mut receiver) = socket.split();
     info!("WebSocket client connected (boxes.rthmn.com)");
 
-    // Send auth required
     let auth_msg = rmp_serde::to_vec(&serde_json::json!({"type": "authRequired"})).unwrap();
     let _ = sender.send(Message::Binary(auth_msg.into())).await;
 
@@ -156,7 +149,6 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                 if let Ok(m) = rmp_serde::from_slice::<serde_json::Value>(&data) {
                     match m.get("type").and_then(|v| v.as_str()) {
                         Some("auth") => {
-                            // Accept any auth for now (boxes.rthmn.com uses service key)
                             authenticated = true;
                             let welcome =
                                 rmp_serde::to_vec(&serde_json::json!({"type": "welcome"})).unwrap();
@@ -171,9 +163,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                                 process_box_update(&state, pair, data).await;
                             }
                         }
-                        Some("heartbeat") => {
-                            // Acknowledge heartbeat
-                        }
+                        Some("heartbeat") => {}
                         _ => {}
                     }
                 }
@@ -224,8 +214,8 @@ async fn process_box_update(state: &Arc<AppState>, pair: &str, data: &serde_json
         return;
     }
 
-    // CHECK ACTIVE SIGNALS AGAINST CURRENT PRICE
-    // This will settle any signals that hit their SL or TP
+    // Step 1: Check existing active signals for price hits (stop loss or targets)
+    // Step 1: Check existing active signals for price hits (stop loss or targets)
     let settlements = state.tracker.check_price(pair, price).await;
     if !settlements.is_empty() {
         info!(
@@ -235,7 +225,6 @@ async fn process_box_update(state: &Arc<AppState>, pair: &str, data: &serde_json
             settlements.len()
         );
         
-        // Remove settled L1 signals from deduplicator
         for settlement in &settlements {
             if settlement.signal.level == 1 {
                 state
@@ -246,10 +235,9 @@ async fn process_box_update(state: &Arc<AppState>, pair: &str, data: &serde_json
         }
     }
 
-    // Detect patterns and generate new signals
+    // Step 2: Detect new patterns and generate signals
     let all_patterns = state.scanner.read().await.detect_patterns(pair, &boxes);
     if all_patterns.is_empty() {
-        // Debug: log when no patterns detected
         let (point, _) = signals_rthmn::instruments::get_instrument_config(pair);
         let integer_values: Vec<i32> = boxes.iter().map(|b| (b.value / point).round() as i32).collect();
         debug!("{}: No patterns detected. Box integer values: {:?}", pair, integer_values);
@@ -278,45 +266,56 @@ async fn process_box_update(state: &Arc<AppState>, pair: &str, data: &serde_json
     info!("{} @ ${:.2} - {} pattern(s) after deduplication", pair, price, unique_patterns.len());
 
     for signal in state.generator.generate_signals(pair, &unique_patterns, &boxes, price) {
-        let Some(trade) = signal.data.trade_opportunities.iter().find(|t| t.is_valid) else {
+        if signal.entry.is_none() || signal.stop_losses.is_empty() || signal.targets.is_empty() {
             continue;
-        };
+        }
 
         let signal_type_enum = match signal.signal_type.as_str() {
             "LONG" => SignalType::LONG,
             _ => SignalType::SHORT,
         };
         
-        if state.deduplicator.should_filter_structural_boxes(pair, &signal.data.box_details, signal_type_enum, signal.level).await {
+        if state.deduplicator.should_filter_structural_boxes(pair, &signal.box_details, signal_type_enum, signal.level).await {
             info!("FILTERED: {} {} L{} - duplicate signal (structural boxes unchanged)", signal.pair, signal.signal_type, signal.level);
             continue;
         }
 
-        let entry = trade.entry.unwrap_or(0.0);
-        let stop_loss = trade.stop_loss.unwrap_or(0.0);
-        let target = trade.target.unwrap_or(0.0);
+        let entry = signal.entry.unwrap_or(0.0);
+        let stop_losses = signal.stop_losses.clone();
+        let targets = signal.targets.clone();
+        let first_stop = stop_losses.first().copied().unwrap_or(0.0);
+        let final_target = targets.last().copied().unwrap_or(0.0);
 
         info!("SIGNAL: {} {} L{} {:?}", signal.pair, signal.signal_type, signal.level, signal.pattern_sequence);
-        for (i, b) in signal.data.box_details.iter().enumerate() {
+        for (i, b) in signal.box_details.iter().enumerate() {
             info!("  Box {}: {} H:{:.5} L:{:.5}", i, b.integer_value, b.high, b.low);
         }
-        info!("  {} E:{:.5} S:{:.5} T:{:.5} R:R:{:.2}", trade.rule_id, entry, stop_loss, target, trade.risk_reward_ratio.unwrap_or(0.0));
+        let final_rr = signal.risk_reward.last().copied().unwrap_or(0.0);
+        info!("  E:{:.5} S:{:?} (first: {:.5}) T:{:?} (final: {:.5}) R:R:{:?} (final: {:.2})", entry, stop_losses, first_stop, targets, final_target, signal.risk_reward, final_rr);
+
+        let target_hits = vec![None; targets.len()];
 
         let active_signal = ActiveSignal {
-            signal_id: signal.signal_id.clone(),
+            id: 0, // Will be set after Supabase insert
             pair: pair.to_string(),
             signal_type: signal_type_enum,
             level: signal.level,
             entry,
-            stop_loss,
-            target,
-            risk_reward_ratio: trade.risk_reward_ratio,
+            stop_losses,
+            targets,
+            target_hits,
+            stop_loss_hit: None,
+            risk_reward: signal.risk_reward.clone(),
             pattern_sequence: signal.pattern_sequence.clone(),
-            box_details: signal.data.box_details.clone(),
-            created_at: signal.timestamp,
+            box_details: signal.box_details.clone(),
+            created_at: chrono::Utc::now().timestamp_millis(),
         };
 
-        state.tracker.add_signal(active_signal).await;
-        let _ = state.signal_tx.send(signal).await;
+        let signal_id = state.tracker.add_signal(active_signal).await;
+        let signal_with_id = signals_rthmn::types::SignalMessage {
+            id: Some(signal_id),
+            ..signal
+        };
+        let _ = state.signal_tx.send(signal_with_id).await;
     }
 }

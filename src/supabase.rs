@@ -1,10 +1,8 @@
-use chrono::{DateTime, Utc};
 use reqwest::Client;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use tracing::{info, warn};
 
-/// Supabase client for storing signals and updating status
 #[derive(Clone)]
 pub struct SupabaseClient {
     client: Client,
@@ -13,27 +11,8 @@ pub struct SupabaseClient {
 }
 
 #[derive(Serialize)]
-struct NewSignalLegacy {
-    signal_id: String,
-    pair: String,
-    signal_type: String,
-    level: i32,
-    pattern_sequence: Vec<i32>,
-    box_details: Vec<crate::types::BoxDetail>,
-    entry: f64,
-    stop_loss: f64,
-    target: f64,
-    risk_reward_ratio: Option<f64>,
+struct UpdateSignalStatus {
     status: String,
-    timestamp: String,
-    subscribers: JsonValue,
-}
-
-#[derive(Serialize)]
-struct UpdateSignalSettlement {
-    status: String,
-    settled_price: f64,
-    settled_at: String,
 }
 
 impl SupabaseClient {
@@ -45,29 +24,49 @@ impl SupabaseClient {
         }
     }
 
-    /// Insert a new signal row
     pub async fn insert_active_signal(
         &self,
         signal: &crate::tracker::ActiveSignal,
-    ) -> Result<(), reqwest::Error> {
-        let created_at_dt =
-            DateTime::from_timestamp_millis(signal.created_at).unwrap_or_else(Utc::now);
-
-        let payload = NewSignalLegacy {
-            signal_id: signal.signal_id.clone(),
-            pair: signal.pair.clone(),
-            signal_type: signal.signal_type.to_string(),
-            level: signal.level as i32,
-            pattern_sequence: signal.pattern_sequence.clone(),
-            box_details: signal.box_details.clone(),
-            entry: signal.entry,
-            stop_loss: signal.stop_loss,
-            target: signal.target,
-            risk_reward_ratio: signal.risk_reward_ratio,
-            status: "active".to_string(),
-            timestamp: created_at_dt.to_rfc3339(),
-            subscribers: JsonValue::Null,
-        };
+    ) -> Result<i64, reqwest::Error> {
+        let target_hits_json: JsonValue = JsonValue::Array(
+            signal.target_hits
+                .iter()
+                .map(|hit| {
+                    hit.map(|(ts, price)| {
+                        serde_json::json!({
+                            "timestamp": ts,
+                            "price": price
+                        })
+                    })
+                    .unwrap_or(JsonValue::Null)
+                })
+                .collect()
+        );
+        
+        let stop_loss_hit_json: JsonValue = signal.stop_loss_hit
+            .map(|(ts, price)| {
+                serde_json::json!({
+                    "timestamp": ts,
+                    "price": price
+                })
+            })
+            .unwrap_or(JsonValue::Null);
+        
+        let payload = serde_json::json!({
+            "pair": signal.pair,
+            "signal_type": signal.signal_type.to_string(),
+            "level": signal.level as i32,
+            "pattern_sequence": signal.pattern_sequence,
+            "box_details": signal.box_details,
+            "entry": signal.entry,
+            "stop_losses": signal.stop_losses,
+            "targets": signal.targets,
+            "target_hits": target_hits_json,
+            "stop_loss_hit": stop_loss_hit_json,
+            "risk_reward": signal.risk_reward,
+            "status": "active",
+            "subscribers": JsonValue::Null,
+        });
 
         let response = self
             .client
@@ -75,36 +74,55 @@ impl SupabaseClient {
             .header("apikey", &self.service_key)
             .header("Authorization", format!("Bearer {}", self.service_key))
             .header("Content-Type", "application/json")
-            .header("Prefer", "return=minimal")
+            .header("Prefer", "return=representation")
             .json(&payload)
             .send()
             .await?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            warn!("[Supabase] Failed to insert signal {}: {} - {}", payload.signal_id, status, body);
-            return Ok(());
-        }
+        let response = response.error_for_status().map_err(|e| {
+            let pair = payload.get("pair").and_then(|v| v.as_str()).unwrap_or("unknown");
+            warn!("[Supabase] Failed to insert signal for {}: {}", pair, e);
+            e
+        })?;
 
+        let inserted: serde_json::Value = response.json().await?;
+        let id = match inserted
+            .as_array()
+            .and_then(|arr| arr.first())
+            .and_then(|row| row.get("id"))
+            .and_then(|v| v.as_i64())
+        {
+            Some(id) => id,
+            None => {
+                warn!("[Supabase] Insert succeeded but no id returned");
+                // Create an error by making a request that will fail
+                return Err(
+                    self.client
+                        .get("http://invalid-url-that-will-fail.example.com")
+                        .send()
+                        .await
+                        .expect_err("This should always fail")
+                );
+            }
+        };
+
+        let pair = payload.get("pair").and_then(|v| v.as_str()).unwrap_or("unknown");
+        let signal_type = payload.get("signal_type").and_then(|v| v.as_str()).unwrap_or("unknown");
+        let level = payload.get("level").and_then(|v| v.as_i64()).unwrap_or(0);
         info!(
-            "[Supabase] Inserted signal: {} {} L{}",
-            payload.pair, payload.signal_type, payload.level
+            "[Supabase] Inserted signal: {} {} L{} (id: {})",
+            pair, signal_type, level, id
         );
-        Ok(())
+        Ok(id)
     }
 
-    /// Update signal status with settlement details
     pub async fn update_signal_status(
         &self,
-        signal_id: &str,
+        signal_id: i64,
         status: &str,
-        settled_price: f64,
     ) -> Result<(), reqwest::Error> {
-        let update = UpdateSignalSettlement {
+        let update = UpdateSignalStatus {
             status: status.to_string(),
-            settled_price,
-            settled_at: Utc::now().to_rfc3339(),
         };
 
         let response = self
@@ -114,20 +132,82 @@ impl SupabaseClient {
             .header("Authorization", format!("Bearer {}", self.service_key))
             .header("Content-Type", "application/json")
             .header("Prefer", "return=minimal")
-            .query(&[("signal_id", format!("eq.{}", signal_id))])
+            .query(&[("id", format!("eq.{}", signal_id))])
             .json(&update)
             .send()
             .await?;
 
         if response.status().is_success() {
             info!(
-                "[Supabase] Settled signal {} -> {} @ {:.5}",
-                signal_id, status, settled_price
+                "[Supabase] Updated signal {} status to {}",
+                signal_id, status
             );
         } else {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            warn!("[Supabase] Failed to settle signal {}: {} - {}", signal_id, status, body);
+            warn!("[Supabase] Failed to update signal {} status: {} - {}", signal_id, status, body);
+        }
+
+        Ok(())
+    }
+
+    pub async fn update_target_hits(
+        &self,
+        signal_id: i64,
+        target_hits: &[Option<(i64, f64)>],
+        stop_loss_hit: Option<(i64, f64)>,
+    ) -> Result<(), reqwest::Error> {
+        let target_hits_json: JsonValue = JsonValue::Array(
+            target_hits
+                .iter()
+                .map(|hit| {
+                    hit.map(|(ts, price)| {
+                        serde_json::json!({
+                            "timestamp": ts,
+                            "price": price
+                        })
+                    })
+                    .unwrap_or(JsonValue::Null)
+                })
+                .collect()
+        );
+        
+        let stop_loss_hit_json: JsonValue = stop_loss_hit
+            .map(|(ts, price)| {
+                serde_json::json!({
+                    "timestamp": ts,
+                    "price": price
+                })
+            })
+            .unwrap_or(JsonValue::Null);
+        
+        let update = serde_json::json!({
+            "target_hits": target_hits_json,
+            "stop_loss_hit": stop_loss_hit_json,
+        });
+
+        let response = self
+            .client
+            .patch(&format!("{}/rest/v1/signals", self.url))
+            .header("apikey", &self.service_key)
+            .header("Authorization", format!("Bearer {}", self.service_key))
+            .header("Content-Type", "application/json")
+            .header("Prefer", "return=minimal")
+            .query(&[("id", format!("eq.{}", signal_id))])
+            .json(&update)
+            .send()
+            .await?;
+
+        if response.status().is_success() {
+            let hits_count = target_hits.iter().filter(|h| h.is_some()).count();
+            info!(
+                "[Supabase] Updated target hits for signal {}: {}/{} targets hit",
+                signal_id, hits_count, target_hits.len()
+            );
+        } else {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            warn!("[Supabase] Failed to update target hits for signal {}: {} - {}", signal_id, status, body);
         }
 
         Ok(())

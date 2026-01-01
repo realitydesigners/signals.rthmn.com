@@ -12,14 +12,16 @@ High-performance Rust microservice that detects trading signals by matching real
 6. [Deduplication Strategies](#deduplication-strategies)
 7. [Trade Rules & Signal Generation](#trade-rules--signal-generation)
 8. [Signal Tracking & Settlement](#signal-tracking--settlement)
-9. [Edge Cases & Special Handling](#edge-cases--special-handling)
-10. [API Endpoints](#api-endpoints)
-11. [Configuration](#configuration)
-12. [Data Structures](#data-structures)
-13. [Performance Characteristics](#performance-characteristics)
-14. [Error Handling](#error-handling)
+9. [API Endpoints](#api-endpoints)
+10. [Configuration](#configuration)
+11. [Data Structures](#data-structures)
+12. [Performance Characteristics](#performance-characteristics)
+13. [Error Handling](#error-handling)
+14. [Edge Cases & Special Handling](#edge-cases--special-handling)
 15. [Testing](#testing)
-16. [Deployment](#deployment)
+16. [Monitoring & Observability](#monitoring--observability)
+17. [Deployment](#deployment)
+18. [Complete End-to-End Example](#complete-end-to-end-example)
 
 ## Architecture
 
@@ -254,14 +256,14 @@ Boxes are sorted by absolute value descending and indexed starting from 0:
 
 **All Levels Supported**: L1, L2, L3, L4, L5, L6
 
-| Level | Entry Box | Entry Point | Stop Boxes | Stop Point | Target Boxes | Target Point |
-|-------|-----------|-------------|------------|------------|--------------|--------------|
-| L1    | 1         | HIGH        | [0]        | LOW        | [0]          | HIGH         |
-| L2    | 2         | HIGH        | [1]        | LOW        | [0, 1]       | HIGH         |
-| L3    | 3         | HIGH        | [2]        | LOW        | [0, 1, 2]    | HIGH         |
-| L4    | 4         | HIGH        | [3]        | LOW        | [0, 1, 2, 3] | HIGH         |
-| L5    | 5         | HIGH        | [4]        | LOW        | [0, 1, 2, 3, 4] | HIGH      |
-| L6    | 6         | HIGH        | [5]        | LOW        | [0, 1, 2, 3, 4, 5] | HIGH   |
+| Level | Entry Box | Entry Point | Stop Boxes | Stop Point | Target Boxes    | Target Point |
+|-------|-----------|-------------|------------|------------|-----------------|--------------|
+| L1    | 1         | HIGH        | [0]        | LOW        | [0]             | HIGH         |
+| L2    | 2         | HIGH        | [1]        | LOW        | [0, 1]          | HIGH         |
+| L3    | 3         | HIGH        | [2]        | LOW        | [0, 1, 2]       | HIGH         |
+| L4    | 4         | HIGH        | [3]        | LOW        | [0, 1, 2, ...,] | HIGH         |
+| L5    | 5         | HIGH        | [4]        | LOW        | [0, 1, 2, ...,] | HIGH         |
+| L6    | 6         | HIGH        | [5]        | LOW        | [0, 1, 2, ...,] | HIGH         |
 
 **Note**: 
 - Rules are symmetric for LONG and SHORT, but entry/stop points are inverted for SHORT
@@ -310,8 +312,6 @@ Targets:    [$78,000, $61,680] (cumulative)
 
 ### Target Calculation Details
 
-**Location**: `signal.rs::create_signal()` lines 190-228
-
 **Detailed Process**:
 1. **Get Base Price**: Extract price from first target box (box 0)
    - LONG: Use box 0 HIGH
@@ -352,8 +352,6 @@ After sorting (ascending): [2850.00, 2934.50, 2994.10, 3094.10]
 **Important Note**: Direct targets are not cumulative - they are the actual HIGH/LOW values of each box. Only the last target adds the first box size.
 
 ### Risk/Reward Calculation
-
-**Location**: `signal.rs::create_signal()` lines 230-248
 
 **Formula**: `risk_reward_ratios[i] = round(|target[i] - entry| / |entry - first_stop_loss|)` (one ratio per target)
 
@@ -435,8 +433,6 @@ Result: Signal 2 should be FILTERED because box 0 unchanged
 - If new L1 signal has same box 0 high/low → filter it
 - Clear L1 tracking when box 0 changes (handled by Strategy 2)
 
-**Code Location**: `deduplication.rs::should_filter_l1()`
-
 **Note**: The internal tracking uses `box1_high` and `box1_low` field names, but these refer to box 0 (the largest box) in the 0-indexed system.
 
 **Reasoning**: When box 0 is unchanged, subsequent L1 signals represent the same market state. The first signal is sufficient; additional signals would be redundant entries.
@@ -462,8 +458,6 @@ Result: Signal 2 should be FILTERED because box 0 unchanged
 When box 0 changes, immediately clear:
 - ✅ All active L1 signals for that pair
 - ✅ Update box 0 state to new values
-
-**Code Location**: `deduplication.rs::should_filter_pattern()`
 
 **Why This Works**: 
 - Prevents cache growth: Old tracking data is automatically cleared when market state changes
@@ -506,8 +500,6 @@ Result: Keep Level 5, filter Level 4 (L4 is subset of L5)
 - If subset found → filter (duplicate)
 - If not a subset → keep (unique pattern)
 - Only compare patterns of the same signal type (LONG vs SHORT)
-
-**Code Location**: `deduplication.rs::remove_subset_duplicates()`
 
 **Reasoning**: Higher levels represent deeper market structure and stronger signals. When a lower-level pattern is a subset of a higher-level pattern, the higher level contains all the information. Lower level duplicates are redundant.
 
@@ -587,15 +579,11 @@ Result: Signal 2 should be ALLOWED (tracked structural box -488 high/low changed
 8. Tolerance: 0.00001 (accounts for floating-point precision)
 9. Entry box changes are ignored for deduplication purposes
 
-**Code Location**: `deduplication.rs::should_filter_structural_boxes()`
-
 **Reasoning**: Structural boxes define the pattern's core structure. When they remain unchanged, the pattern represents the same market state regardless of entry box changes. Only when tracked structural boxes' high/low values change does the pattern represent a new market state, warranting a new signal.
 
 **Key Insight**: The entry box is the trigger point and naturally shifts with price movement. It's not part of the structural pattern, so it's excluded from deduplication tracking. We track structural boxes from largest to the box before the entry box (boxes 0 through level-1). If ANY tracked structural box's high/low changes, the tracker resets for that specific pattern sequence, allowing a new signal. This ensures we don't spam duplicate signals while the pattern structure remains stable, but we do allow new signals when the underlying structure shifts.
 
 ## Signal Generation Process Flow
-
-**Location**: `main.rs::process_box_update()` and `signal.rs::generate_signals()`
 
 **Complete Flow**:
 1. **Pattern Detection**: `scanner.detect_patterns()` returns all matching patterns
@@ -685,8 +673,6 @@ process_box_update()
 
 ### Settlement Logic
 
-**Location**: `tracker.rs::check_price()`
-
 **Check Frequency**: Every box update (real-time, typically multiple times per second)
 
 **Detailed Process**:
@@ -738,8 +724,6 @@ process_box_update()
 2. Final target hit → settlement (success)
 3. Partial targets hit → continue monitoring
 
-**Code Location**: `tracker.rs::check_price()` lines 74-173
-
 ### Settlement Cleanup
 
 When a signal is settled:
@@ -748,8 +732,6 @@ When a signal is settled:
 3. If L1 signal → remove from L1 deduplication tracking
 4. Remove from in-memory active signals
 5. Log settlement event with hit statistics
-
-**Code Location**: `main.rs::process_box_update()` and `tracker.rs::check_price()`
 
 ## API Endpoints
 
@@ -899,8 +881,6 @@ pub struct BoxDetail {
 
 ## Pattern Database Generation
 
-**Location**: `scanner.rs::initialize()` and `scanner.rs::traverse_all_paths()`
-
 **Process**:
 1. Start with `STARTING_POINTS` array (24 values: 10000, 8660, 7506, ..., 366)
 2. For each starting point, recursively traverse all possible paths:
@@ -926,8 +906,6 @@ pub struct BoxDetail {
 
 ## Pattern Matching Algorithm
 
-**Location**: `scanner.rs::detect_patterns()`
-
 **Detailed Algorithm**:
 1. **Input Validation**: Return empty if boxes array is empty
 2. **Integer Conversion**: Convert all box values to integers using instrument point
@@ -945,8 +923,6 @@ pub struct BoxDetail {
 **Optimization**: HashSet membership check is O(1), making overall algorithm O(n*m) where n=paths, m=path length
 
 ## Level Calculation
-
-**Location**: `scanner.rs::calculate_level()`
 
 **Detailed Algorithm**:
 ```rust
@@ -987,89 +963,37 @@ fn calculate_level(path: &[i32]) -> u32 {
 - No pattern matches: Returns level 1 (minimum)
 - Multiple possible matches: Uses first match found (left-to-right)
 
-## Key Implementation Details
-
-### Pattern Database Generation
-- Generated at startup from `BOXES` map and `STARTING_POINTS`
-- Only LONG paths generated (positive), SHORT patterns are inverted during detection
-- Total: ~1,506,648 unique paths
-- Stored in memory as `Vec<TraversalPath>`
-- Generation time: < 1 second at startup
-- Memory usage: ~50-100MB depending on path lengths
-
-### Level Calculation
-- Traverses path sequentially from start to end
-- Matches against `BOXES[key.abs()]` patterns
-- Counts complete reversals (pattern matches that end at a new key)
-- Minimum level is 1 (even if no reversals found)
-- Algorithm complexity: O(path_length * patterns_per_key)
-
-### Primary Boxes Extraction
-- Filtered by signal type: positive for LONG, negative for SHORT
-- Sorted by absolute value descending (box 0 = largest)
-- Used for trade rule calculations (entry, stop, targets)
-- Location: `signal.rs::create_signal()`
-
-### Target Calculation
-- Direct targets: HIGH/LOW values of each target box
-- Last target: base ± first box size (LONG: +, SHORT: -)
-- Sorted: LONG ascending (closest first), SHORT descending (closest first)
-- Location: `signal.rs::create_signal()` lines 190-228
-
-### State Management
-- Box 0 high/low serves as global state indicator
-- When box 0 changes, all L1 signals cleared for that pair
-- Structural boxes tracking persists across box 0 changes (tracked per pattern sequence)
-- Tolerance: 0.00001 for floating-point comparisons
-
-### Memory Management
-- Bounded by active pairs and pattern sequences
-- Cleared on box 0 change (L1 signals)
-- Structural boxes tracking grows with unique patterns but bounded by market activity
-- Pattern database: ~50-100MB (static, loaded at startup)
-- Active signals: ~1KB per signal (bounded by active pairs)
-
-### Error Handling
+## Error Handling
 
 **Signal Generation Errors**:
 - **Invalid Signal Data**: Pattern matches but trade rule calculation fails (missing boxes, invalid prices, empty arrays)
-  - Handling: Signal filtered before sending (line 269 in `main.rs`)
-  - Logging: Silent filter, no explicit error log
+  - Handling: Signal filtered before sending
 - **Missing Trade Rule**: Pattern level has no matching trade rule
   - Handling: Signal generated with empty entry/stop_losses/targets, filtered
-  - Code: `signal.rs::create_signal()` returns empty values
 
 **Database Errors**:
 - **Supabase Write Failures**: Failed to insert signal to Supabase
-  - Handling: Log warning, return id=0, signal still forwarded, in-memory tracking continues
-  - Code: `tracker.rs::add_signal()` lines 48-58
+  - Handling: Return id=0, signal still forwarded, in-memory tracking continues
 - **Supabase Update Failures**: Failed to update target hits or status
-  - Handling: Log warning but continue, in-memory state updated, no retry
-  - Code: `tracker.rs::check_price()` lines 120-128, 162-170
+  - Handling: Continue, in-memory state updated, no retry
 
 **Network Errors**:
 - **WebSocket Disconnection**: Connection to boxes.rthmn.com drops
-  - Handling: Log disconnect, state persists, fresh auth on reconnect
-  - Code: `main.rs::handle_socket()` line 179
+  - Handling: State persists, fresh auth on reconnect
 - **Main Server Forwarding Failures**: Failed to forward signal to server.rthmn.com
-  - Handling: Log warning, signal still stored in Supabase, no retry
-  - Code: `main.rs::main_server_forwarder()` lines 195-202
+  - Handling: Signal still stored in Supabase, no retry
 
 **Configuration Errors**:
 - **Missing Instrument Config**: Unknown trading pair
   - Handling: Uses default point=0.01, may cause incorrect matching
-  - Code: `instruments.rs::get_instrument_config()` line 188
 - **Missing Environment Variables**: Required env vars not set
   - Handling: SUPABASE_URL/KEY panic, PORT defaults to 3003, MAIN_SERVER_URL defaults
-  - Code: `main.rs::main()` lines 46-54
 
 **Data Validation Errors**:
 - **Empty Box Array**: Box update with empty boxes
   - Handling: Early return, no processing
-  - Code: `main.rs::process_box_update()` line 213
 - **Invalid Box/Price Data**: Cannot parse from JSON
   - Handling: Defaults to empty/0.0, early return
-  - Code: `main.rs::process_box_update()` lines 209-211
 
 ## Performance Characteristics
 
@@ -1080,13 +1004,14 @@ fn calculate_level(path: &[i32]) -> u32 {
 - **Throughput**: Processes box updates in <1ms per update
 
 ### Memory Usage
-- **Pattern Storage**: ~50-100MB (depends on path lengths, static)
+- **Pattern Storage**: ~50-100MB (depends on path lengths, static, loaded at startup)
 - **Deduplication State**: Bounded by:
   - Active pairs (typically 10-50)
-  - Structural boxes tracking (per pattern sequence)
+  - Structural boxes tracking (per pattern sequence, persists across box 0 changes)
   - L1 signal tracking (cleared on box 0 change)
-  - Box 0 state tracking (one entry per pair)
+  - Box 0 state tracking (one entry per pair, serves as global state indicator)
 - **Active Signals**: ~1KB per signal, bounded by active pairs
+- **Tolerance**: 0.00001 for floating-point comparisons
 
 ### Throughput
 - **Box Updates**: Processed in <1ms per update
@@ -1149,24 +1074,6 @@ cargo test --test patterns_test test_generate_all_paths -- --nocapture
 
 ## Monitoring & Observability
 
-### Logging
-
-**Log Levels** (configured via `RUST_LOG`):
-- **INFO**: Signal generation, settlements, pattern matches, connections
-- **DEBUG**: Pattern detection details, deduplication filters, integer values
-- **WARN**: Supabase failures, forwarding failures, WebSocket errors
-- **ERROR**: Critical errors (rare, mostly handled gracefully)
-
-**Key Log Events**:
-- **Startup**: `"SIGNALS.RTHMN.COM - Rust Edition"`, `"MarketScanner initialized with {} paths"`
-- **Pattern Detection**: `"{}: Detected {} pattern(s)"`
-- **Deduplication**: `"{}: {} pattern(s) passed deduplication"`, `"FILTERED: {} {} L{} - duplicate signal"`
-- **Signal Generation**: `"SIGNAL: {} {} L{} {:?}"` with full box details and prices
-- **Signal Settlement**: `"[Tracker] SETTLED: {} {} L{} → {} @ {:.5} (targets hit: {}/{})"`
-- **Target Hits**: `"[Tracker] Target {} hit: {} {} L{} target[{}] = {:.5} @ {:.5}"`
-- **Stop Loss Hits**: `"[Tracker] Stop loss hit: {} {} L{} stop = {:.5} @ {:.5}"`
-- **WebSocket**: `"WebSocket client connected"`, `"boxes.rthmn.com authenticated"`, `"WebSocket client disconnected"`
-
 ### Metrics (via GET /api/status)
 
 **Available Metrics**:
@@ -1190,14 +1097,8 @@ cargo test --test patterns_test test_generate_all_paths -- --nocapture
 - Use for: Load balancer health checks, uptime monitoring
 - No database or external service checks (lightweight)
 
-**WebSocket Status**:
-- Connection status logged on connect/disconnect
-- No explicit health endpoint for WebSocket
-- Monitor via logs: `"WebSocket client connected"` / `"WebSocket client disconnected"`
-
 **Supabase Connectivity**:
 - Implicit check via write operations
-- Failures logged: `"[Supabase] Failed to insert signal"`
 - Does not affect service availability (fail-fast, continue processing)
 
 ## Deployment
@@ -1236,118 +1137,6 @@ RUST_LOG=signals_rthmn=debug cargo run
 cargo run --release
 ```
 
-## Complete End-to-End Example
-
-This section demonstrates a complete signal detection and settlement flow with real data.
-
-### Scenario: GBPCAD LONG L3 Signal Detection and Settlement
-
-**Step 1: Receive Box Update**
-```json
-{
-  "type": "boxUpdate",
-  "pair": "GBPCAD",
-  "data": {
-    "boxes": [
-      {"high": 1.85148, "low": 1.84333, "value": 815},
-      {"high": 1.85000, "low": 1.84400, "value": 600},
-      {"high": 1.84800, "low": 1.84200, "value": 600},
-      {"high": 1.84600, "low": 1.84000, "value": 600}
-    ],
-    "price": 1.84349,
-    "timestamp": "2025-12-19T01:06:23.123Z"
-  }
-}
-```
-
-**Step 2: Convert to Integers**
-- GBPCAD point = 0.00001
-- Box 0: 815 / 0.00001 = 81500
-- Box 1: 600 / 0.00001 = 60000
-- Box 2: 600 / 0.00001 = 60000
-- Box 3: 600 / 0.00001 = 60000
-- Integer values: `[81500, 60000, 60000, 60000]`
-- Value set: `{81500, 60000}`
-
-**Step 3: Pattern Matching**
-- Scanner checks ~1.5M pre-computed paths
-- Path found: `[1000, -866, -750, -650, -563, 274, -237, -205, -178]`
-- Check values: 1000, -866, -750, -650, -563, 274, -237, -205, -178
-- Current boxes contain: 1000? No (we have 81500, 60000)
-- Actually, let's use a matching example:
-- Path: `[815, -700, -600, 500]` (simplified for example)
-- Check: 815 ∈ boxes? ✓, -700 ∈ boxes? ✗, -600 ∈ boxes? ✗
-- Better: Path `[815, 600]` matches current boxes
-- Match found: LONG pattern (first value 815 is positive)
-
-**Step 4: Calculate Level**
-- Path: `[815, 600]` (simplified)
-- Start at 815, look up BOXES[815]
-- If pattern `[600]` exists and matches → 1 reversal
-- Level = 1 (minimum)
-
-For a Level 3 example:
-- Path: `[1000, -866, -750, -650, -563, 274, -237, -205, -178]`
-- Reversal 1: 1000 → matches pattern ending at 274
-- Reversal 2: 274 → matches pattern ending at -178
-- Reversal 3: -178 → no more matches
-- Level = 3 (3 complete reversals)
-
-**Step 5: Apply Deduplication Filters**
-1. **L1 First-Only**: Not L1, skip
-2. **Box 0 State**: Check box 0 (1.85148, 1.84333), no change from previous state
-3. **Subset Removal**: Check if lower-level subset exists, none found, keep
-4. **Structural Boxes**: First occurrence of this pattern sequence, allow
-
-**Step 6: Generate Signal**
-- Pattern: `[1000, -866, -750, -650, -563, 274, -237, -205, -178]`
-- Primary boxes (positive for LONG): `[1000, 274]`
-- Sorted by abs desc: `[1000, 274]` (box 0=1000, box 1=274)
-- L3 Trade Rule:
-  - Entry box index 3: Not enough boxes (only 2 primary boxes)
-  - This would fail validation, signal filtered
-  
-**Realistic L3 Example with Sufficient Boxes**:
-- Pattern with more positive boxes: `[1000, -866, 750, -650, 563, 274, -237, 205, -178, 154]`
-- Primary boxes: `[1000, 750, 563, 274, 205, 154]`
-- Sorted: `[1000, 750, 563, 274, 205, 154]`
-- L3 Rule:
-  - Entry: Box 3 HIGH = 274.high
-  - Stop: Box 2 LOW = 563.low
-  - Targets: [Box 0 HIGH, Box 1 HIGH, Box 2 HIGH] + last target
-
-**Step 7: Store & Forward**
-- Signal stored in Supabase with ID 12484
-- Forwarded to server.rthmn.com via HTTP POST
-- Added to active tracking for settlement monitoring
-
-**Step 8: Settlement (Price Movement)**
-- Initial price: 1.84349
-- Entry: 1.84600 (break above to enter)
-- Price moves up, hits Target 1: 1.85148 → recorded
-- Price continues, hits Target 2: 1.85500 → recorded  
-- Price hits final target: 1.86000 → settlement triggered
-- Status: "success"
-- Settled price: 1.86000 (from final target hit)
-- Removed from active tracking
-- L1 deduplication cleared (if L1 signal)
-
-**Log Output Example**:
-```
-GBPCAD: Detected 3 pattern(s)
-GBPCAD: 2 pattern(s) passed deduplication
-SIGNAL: GBPCAD LONG L3 [1000, -866, -750, -650, -563, 274, -237, -205, -178]
-  Box 0: 1000 H:1.85148 L:1.84333
-  Box 1: 274 H:1.85000 L:1.84400
-  E:1.84600 S:[1.84200] (first: 1.84200) T:[1.85148, 1.86000] (final: 1.86000) R:R:[0, 1] (final: 1.00)
-[Tracker] Added active signal: GBPCAD LONG L3 (id: 12484, total: 12)
-[Tracker] Target 1 hit: GBPCAD LONG L3 target[0] = 1.85148 @ 1.85150
-[Tracker] Target 2 hit: GBPCAD LONG L3 target[1] = 1.86000 @ 1.86010
-[Tracker] SETTLED: GBPCAD LONG L3 → success @ 1.86010 (targets hit: 2/2)
-```
-
-## Edge Cases & Special Handling
-
 ## Edge Cases & Special Handling
 
 ### Case 1: Multiple Patterns Detected Simultaneously
@@ -1358,8 +1147,6 @@ SIGNAL: GBPCAD LONG L3 [1000, -866, -750, -650, -563, 274, -237, -205, -178]
 2. Apply deduplication filters to each
 3. Group by pattern sequence (prefer highest level)
 4. Generate signals for unique patterns only
-
-**Code Location**: `main.rs::process_box_update()` lines 239-266
 
 ### Case 2: Pattern Sequence Appears at Multiple Levels
 **Scenario**: Same sequence matches L4 and L5 simultaneously
@@ -1396,10 +1183,7 @@ Pattern: [6503, ..., 16]
 
 **Handling**:
 - Signal generated but entry, stop_losses, or targets are invalid/empty
-- Signal not sent to users (filtered in main loop line 269)
-- Logged for debugging
-
-**Code Location**: `main.rs::process_box_update()` line 269
+- Signal not sent to users (filtered before sending)
 
 ### Case 6: WebSocket Disconnection
 **Scenario**: Connection to boxes.rthmn.com drops
@@ -1419,26 +1203,18 @@ Pattern: [6503, ..., 16]
 - In-memory tracking continues
 - Retry not implemented (fail-fast approach)
 
-**Code Location**: `tracker.rs::add_signal()` lines 48-58
-
 ### Case 8: Missing Instrument Configuration
 **Scenario**: Unknown trading pair (not in `instruments.rs`)
 
 **Handling**:
 - Uses default point value: 0.01
 - May cause incorrect pattern matching for exotic pairs
-- Logged for monitoring
-
-**Code Location**: `instruments.rs::get_instrument_config()` line 188
 
 ### Case 9: Empty Box Array
 **Scenario**: Box update received with empty boxes array
 
 **Handling**:
 - Early return, no processing
-- No error logged (expected during initialization)
-
-**Code Location**: `main.rs::process_box_update()` line 213
 
 ### Case 10: Price Hits Multiple Targets Simultaneously
 **Scenario**: Price jumps past multiple targets in single update
@@ -1448,4 +1224,75 @@ Pattern: [6503, ..., 16]
 - All hit targets recorded with same timestamp
 - Settlement occurs if final target hit
 
-**Code Location**: `tracker.rs::check_target_hits()` lines 198-222
+## Complete End-to-End Example
+
+This section demonstrates a complete signal detection and settlement flow.
+
+### Scenario: GBPCAD LONG L3 Signal Detection and Settlement
+
+**Step 1: Receive Box Update**
+```json
+{
+  "type": "boxUpdate",
+  "pair": "GBPCAD",
+  "data": {
+    "boxes": [
+      {"high": 1.85148, "low": 1.84333, "value": 815},
+      {"high": 1.85000, "low": 1.84400, "value": 600},
+      {"high": 1.84800, "low": 1.84200, "value": 600},
+      {"high": 1.84600, "low": 1.84000, "value": 600}
+    ],
+    "price": 1.84349,
+    "timestamp": "2025-12-19T01:06:23.123Z"
+  }
+}
+```
+
+**Step 2: Convert to Integers**
+- GBPCAD point = 0.00001
+- Box 0: 815 / 0.00001 = 81500
+- Box 1: 600 / 0.00001 = 60000
+- Integer values: `[81500, 60000, 60000, 60000]`
+- Value set: `{81500, 60000}`
+
+**Step 3: Pattern Matching**
+- Scanner checks ~1.5M pre-computed paths
+- Path found: `[1000, -866, -750, -650, -563, 274, -237, -205, -178]`
+- Match found: LONG pattern (first value positive)
+
+**Step 4: Calculate Level**
+- Path: `[1000, -866, -750, -650, -563, 274, -237, -205, -178]`
+- Reversal 1: 1000 → matches pattern ending at 274
+- Reversal 2: 274 → matches pattern ending at -178
+- Reversal 3: -178 → no more matches
+- Level = 3 (3 complete reversals)
+
+**Step 5: Apply Deduplication Filters**
+1. **L1 First-Only**: Not L1, skip
+2. **Box 0 State**: Check box 0 (1.85148, 1.84333), no change from previous state
+3. **Subset Removal**: Check if lower-level subset exists, none found, keep
+4. **Structural Boxes**: First occurrence of this pattern sequence, allow
+
+**Step 6: Generate Signal**
+- Pattern: `[1000, -866, 750, -650, 563, 274, -237, 205, -178, 154]`
+- Primary boxes (positive for LONG): `[1000, 750, 563, 274, 205, 154]`
+- Sorted: `[1000, 750, 563, 274, 205, 154]`
+- L3 Rule:
+  - Entry: Box 3 HIGH = 274.high
+  - Stop: Box 2 LOW = 563.low
+  - Targets: [Box 0 HIGH, Box 1 HIGH, Box 2 HIGH] + last target
+
+**Step 7: Store & Forward**
+- Signal stored in Supabase
+- Forwarded to server.rthmn.com via HTTP POST
+- Added to active tracking for settlement monitoring
+
+**Step 8: Settlement (Price Movement)**
+- Initial price: 1.84349
+- Entry: 1.84600 (break above to enter)
+- Price moves up, hits Target 1: 1.85148 → recorded
+- Price continues, hits Target 2: 1.85500 → recorded  
+- Price hits final target: 1.86000 → settlement triggered
+- Status: "success"
+- Settled price: 1.86000 (from final target hit)
+- Removed from active tracking
