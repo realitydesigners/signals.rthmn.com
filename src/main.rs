@@ -142,38 +142,62 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     let _ = sender.send(Message::Binary(auth_msg.into())).await;
 
     let mut authenticated = false;
+    let mut heartbeat_interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
+    let mut last_heartbeat = std::time::Instant::now();
 
-    while let Some(msg) = receiver.next().await {
-        match msg {
-            Ok(Message::Binary(data)) => {
-                if let Ok(m) = rmp_serde::from_slice::<serde_json::Value>(&data) {
-                    match m.get("type").and_then(|v| v.as_str()) {
-                        Some("auth") => {
-                            authenticated = true;
-                            let welcome =
-                                rmp_serde::to_vec(&serde_json::json!({"type": "welcome"})).unwrap();
-                            let _ = sender.send(Message::Binary(welcome.into())).await;
-                            info!("boxes.rthmn.com authenticated");
-                        }
-                        Some("boxUpdate") if authenticated => {
-                            if let (Some(pair), Some(data)) =
-                                (m.get("pair").and_then(|v| v.as_str()), m.get("data"))
-                            {
-                                debug!("Received boxUpdate for {}", pair);
-                                process_box_update(&state, pair, data).await;
+    loop {
+        tokio::select! {
+            msg = receiver.next() => {
+                match msg {
+                    Some(Ok(Message::Binary(data))) => {
+                        if let Ok(m) = rmp_serde::from_slice::<serde_json::Value>(&data) {
+                            match m.get("type").and_then(|v| v.as_str()) {
+                                Some("auth") => {
+                                    authenticated = true;
+                                    let welcome =
+                                        rmp_serde::to_vec(&serde_json::json!({"type": "welcome"})).unwrap();
+                                    let _ = sender.send(Message::Binary(welcome.into())).await;
+                                    info!("boxes.rthmn.com authenticated");
+                                    last_heartbeat = std::time::Instant::now();
+                                }
+                                Some("boxUpdate") if authenticated => {
+                                    if let (Some(pair), Some(data)) =
+                                        (m.get("pair").and_then(|v| v.as_str()), m.get("data"))
+                                    {
+                                        debug!("Received boxUpdate for {}", pair);
+                                        process_box_update(&state, pair, data).await;
+                                        last_heartbeat = std::time::Instant::now();
+                                    }
+                                }
+                                Some("heartbeat") => {
+                                    last_heartbeat = std::time::Instant::now();
+                                    if authenticated {
+                                        let heartbeat_response = rmp_serde::to_vec(&serde_json::json!({"type": "heartbeat"})).unwrap();
+                                        let _ = sender.send(Message::Binary(heartbeat_response.into())).await;
+                                    }
+                                }
+                                _ => {}
                             }
                         }
-                        Some("heartbeat") => {}
-                        _ => {}
                     }
+                    Some(Ok(Message::Close(_))) | None => break,
+                    Some(Err(e)) => {
+                        warn!("WebSocket error: {}", e);
+                        break;
+                    }
+                    _ => {}
                 }
             }
-            Ok(Message::Close(_)) => break,
-            Err(e) => {
-                warn!("WebSocket error: {}", e);
-                break;
+            _ = heartbeat_interval.tick(), if authenticated => {
+                if last_heartbeat.elapsed() > tokio::time::Duration::from_secs(90) {
+                    warn!("No heartbeat from boxes.rthmn.com for 90s, closing connection");
+                    break;
+                }
+                let heartbeat = rmp_serde::to_vec(&serde_json::json!({"type": "heartbeat"})).unwrap();
+                if sender.send(Message::Binary(heartbeat.into())).await.is_err() {
+                    break;
+                }
             }
-            _ => {}
         }
     }
     info!("WebSocket client disconnected");
