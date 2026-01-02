@@ -239,8 +239,8 @@ async fn process_box_update(state: &Arc<AppState>, pair: &str, data: &serde_json
     }
 
     // Step 1: Check existing active signals for price hits (stop loss or targets)
-    // Step 1: Check existing active signals for price hits (stop loss or targets)
-    let settlements = state.tracker.check_price(pair, price).await;
+    let pair_upper = pair.to_uppercase();
+    let settlements = state.tracker.check_price(&pair_upper, price).await;
     if !settlements.is_empty() {
         info!(
             "{} @ ${:.5} - {} signal(s) settled",
@@ -318,10 +318,11 @@ async fn process_box_update(state: &Arc<AppState>, pair: &str, data: &serde_json
         info!("  E:{:.5} S:{:?} (first: {:.5}) T:{:?} (final: {:.5}) R:R:{:?} (final: {:.2})", entry, stop_losses, first_stop, targets, final_target, signal.risk_reward, final_rr);
 
         let target_hits = vec![None; targets.len()];
+        let pair_upper = pair.to_uppercase();
 
         let active_signal = ActiveSignal {
             id: 0, // Will be set after Supabase insert
-            pair: pair.to_string(),
+            pair: pair_upper,
             signal_type: signal_type_enum,
             level: signal.level,
             entry,

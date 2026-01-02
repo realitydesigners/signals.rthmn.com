@@ -41,7 +41,8 @@ impl SignalTracker {
     }
 
     pub async fn add_signal(&self, mut signal: ActiveSignal) -> i64 {
-        let pair = signal.pair.clone();
+        let pair_upper = signal.pair.to_uppercase();
+        signal.pair = pair_upper.clone();
         let signal_type = signal.signal_type.to_string();
         let level = signal.level;
 
@@ -61,25 +62,39 @@ impl SignalTracker {
 
         let mut active = self.active.write().await;
         active
-            .entry(pair.clone())
+            .entry(pair_upper.clone())
             .or_insert_with(Vec::new)
             .push(signal);
 
         let total = active.values().map(|v| v.len()).sum::<usize>();
         drop(active);
-        info!("[Tracker] Added active signal: {} {} L{} (id: {}, total: {})", pair, signal_type, level, id, total);
+        info!("[Tracker] Added active signal: {} {} L{} (id: {}, total: {})", pair_upper, signal_type, level, id, total);
         id
     }
 
     pub async fn check_price(&self, pair: &str, current_price: f64) -> Vec<Settlement> {
         let now = chrono::Utc::now().timestamp_millis();
+        let pair_upper = pair.to_uppercase();
         let mut hit_updates: Vec<(i64, Vec<Option<(i64, f64)>>, Option<(i64, f64)>)> = Vec::new();
+        
+        if current_price <= 0.0 {
+            tracing::warn!("[Tracker] Invalid price for {}: {}", pair, current_price);
+            return vec![];
+        }
         
         let to_settle: Vec<(usize, &'static str)> = {
             let mut active = self.active.write().await;
-            let Some(signals) = active.get_mut(pair) else {
+            let Some(signals) = active.get_mut(&pair_upper) else {
+                tracing::debug!("[Tracker] No active signals found for pair: {} (checked: {})", pair, pair_upper);
                 return vec![];
             };
+            
+            if signals.is_empty() {
+                tracing::debug!("[Tracker] Pair {} has empty signals vector", pair_upper);
+                return vec![];
+            }
+            
+            tracing::debug!("[Tracker] Checking {} signals for {} @ {:.5}", signals.len(), pair_upper, current_price);
 
             signals
                 .iter_mut()
@@ -105,8 +120,15 @@ impl SignalTracker {
                         }
                     });
                     
+                    let targets_hit_count = signal.target_hits.iter().filter(|h| h.is_some()).count();
+                    let has_partial_targets = targets_hit_count > 0 && targets_hit_count < signal.targets.len();
+                    
                     if hit_stop {
-                        Some((idx, "failed"))
+                        if has_partial_targets {
+                            Some((idx, "partial"))
+                        } else {
+                            Some((idx, "failed"))
+                        }
                     } else if hit_final_target {
                         Some((idx, "success"))
                     } else {
@@ -133,7 +155,8 @@ impl SignalTracker {
 
         let mut settlements = Vec::new();
         let mut active = self.active.write().await;
-        let Some(signals) = active.get_mut(pair) else {
+        let Some(signals) = active.get_mut(&pair_upper) else {
+            tracing::warn!("[Tracker] Signals removed before settlement for pair: {}", pair_upper);
             return vec![];
         };
 
@@ -177,7 +200,14 @@ impl SignalTracker {
             return None; // Already hit
         }
 
-        let stop_loss = signal.stop_losses.first().copied()?;
+        let stop_loss = match signal.stop_losses.first().copied() {
+            Some(sl) => sl,
+            None => {
+                tracing::warn!("[Tracker] Signal {} has no stop loss", signal.id);
+                return None;
+            }
+        };
+
         let hit = match signal.signal_type {
             SignalType::LONG => current_price <= stop_loss,
             SignalType::SHORT => current_price >= stop_loss,
@@ -186,11 +216,20 @@ impl SignalTracker {
         if hit {
             signal.stop_loss_hit = Some((now, current_price));
             info!(
-                "[Tracker] Stop loss hit: {} {} L{} stop = {:.5} @ {:.5}",
-                signal.pair, signal.signal_type, signal.level, stop_loss, current_price
+                "[Tracker] Stop loss hit: {} {} L{} (id: {}) stop = {:.5} @ {:.5}",
+                signal.pair, signal.signal_type, signal.level, signal.id, stop_loss, current_price
             );
             Some((now, current_price))
         } else {
+            tracing::debug!(
+                "[Tracker] Stop loss not hit: {} {} L{} (id: {}) stop = {:.5} @ {:.5} (diff: {:.5})",
+                signal.pair, signal.signal_type, signal.level, signal.id, stop_loss, current_price,
+                if signal.signal_type == SignalType::LONG {
+                    stop_loss - current_price
+                } else {
+                    current_price - stop_loss
+                }
+            );
             None
         }
     }
