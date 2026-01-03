@@ -1,4 +1,4 @@
-use crate::types::{BoxDetail, PatternMatch, SignalMessage, SignalType};
+use crate::types::{BoxDetail, PatternMatch, SignalMessage, SignalType, Target, StopLoss};
 use lazy_static::lazy_static;
 
 #[derive(Debug, Clone, Copy)]
@@ -183,11 +183,15 @@ impl SignalGenerator {
         let (entry, stop_losses, targets, risk_reward) = if let Some(rule) = rule {
             let entry = get_price(&primary, rule.entry_box, rule.entry_point);
             
-            let stop_losses: Vec<f64> = rule.stop_boxes.iter()
+            let stop_loss_prices: Vec<f64> = rule.stop_boxes.iter()
                 .filter_map(|&box_idx| get_price(&primary, box_idx, rule.stop_point))
                 .collect();
             
-            let targets = rule.target_boxes.first().and_then(|&first_box_idx| {
+            let stop_losses: Vec<StopLoss> = stop_loss_prices.iter()
+                .map(|&price| StopLoss { price, timestamp: None })
+                .collect();
+            
+            let target_prices = rule.target_boxes.first().and_then(|&first_box_idx| {
                 get_price(&primary, first_box_idx, rule.target_point).map(|base| {
                     let mut calculated_targets = Vec::new();
                     
@@ -227,12 +231,16 @@ impl SignalGenerator {
                 })
             }).unwrap_or_default();
             
-            let risk_reward: Vec<f64> = entry.zip(stop_losses.first().copied()).map_or_else(
+            let targets: Vec<Target> = target_prices.iter()
+                .map(|&price| Target { price, timestamp: None })
+                .collect();
+            
+            let risk_reward: Vec<f64> = entry.zip(stop_loss_prices.first().copied()).map_or_else(
                 Vec::new,
                 |(e, s)| {
                     let risk = (e - s).abs();
                     if risk > 0.0 {
-                        targets.iter()
+                        target_prices.iter()
                             .map(|&t| {
                                 let reward = match sig_type {
                                     SignalType::LONG => (t - e).abs(),

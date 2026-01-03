@@ -50,6 +50,20 @@ pub struct BoxDetail {
     pub value: f64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Target {
+    pub price: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StopLoss {
+    pub price: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SignalMessage { 
     pub id: Option<i64>, // Supabase id (set after insert)
@@ -60,8 +74,8 @@ pub struct SignalMessage {
     pub box_details: Vec<BoxDetail>, 
     pub complete_box_snapshot: Vec<i32>, 
     pub entry: Option<f64>,
-    pub stop_losses: Vec<f64>,
-    pub targets: Vec<f64>,
+    pub stop_losses: Vec<StopLoss>,
+    pub targets: Vec<Target>,
     pub risk_reward: Vec<f64>,
 }
 

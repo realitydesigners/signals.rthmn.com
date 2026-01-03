@@ -38,30 +38,6 @@ impl SupabaseClient {
         &self,
         signal: &crate::tracker::ActiveSignal,
     ) -> Result<i64, reqwest::Error> {
-        let target_hits_json: JsonValue = JsonValue::Array(
-            signal.target_hits
-                .iter()
-                .map(|hit| {
-                    hit.map(|(ts, price)| {
-                        serde_json::json!({
-                            "timestamp": Self::timestamp_ms_to_iso_string(ts),
-                            "price": price
-                        })
-                    })
-                    .unwrap_or(JsonValue::Null)
-                })
-                .collect()
-        );
-        
-        let stop_loss_hit_json: JsonValue = signal.stop_loss_hit
-            .map(|(ts, price)| {
-                serde_json::json!({
-                    "timestamp": Self::timestamp_ms_to_iso_string(ts),
-                    "price": price
-                })
-            })
-            .unwrap_or(JsonValue::Null);
-        
         let payload = serde_json::json!({
             "pair": signal.pair,
             "signal_type": signal.signal_type.to_string(),
@@ -71,8 +47,6 @@ impl SupabaseClient {
             "entry": signal.entry,
             "stop_losses": signal.stop_losses,
             "targets": signal.targets,
-            "target_hits": target_hits_json,
-            "stop_loss_hit": stop_loss_hit_json,
             "risk_reward": signal.risk_reward,
             "status": "active",
             "subscribers": JsonValue::Null,
@@ -161,39 +135,28 @@ impl SupabaseClient {
         Ok(())
     }
 
-    pub async fn update_target_hits(
+    pub async fn update_signal_hits(
         &self,
         signal_id: i64,
-        target_hits: &[Option<(i64, f64)>],
-        stop_loss_hit: Option<(i64, f64)>,
     ) -> Result<(), reqwest::Error> {
-        let target_hits_json: JsonValue = JsonValue::Array(
-            target_hits
-                .iter()
-                .map(|hit| {
-                    hit.map(|(ts, price)| {
-                        serde_json::json!({
-                            "timestamp": Self::timestamp_ms_to_iso_string(ts),
-                            "price": price
-                        })
-                    })
-                    .unwrap_or(JsonValue::Null)
-                })
-                .collect()
-        );
+        // This method is called after hits are updated in memory
+        // We need to fetch the signal from active tracking and update it
+        // For now, we'll update targets and stop_losses directly
+        // The actual signal data will be updated via a separate method that fetches from active tracking
+        // This is a placeholder - the real update happens in tracker.rs before calling this
         
-        let stop_loss_hit_json: JsonValue = stop_loss_hit
-            .map(|(ts, price)| {
-                serde_json::json!({
-                    "timestamp": Self::timestamp_ms_to_iso_string(ts),
-                    "price": price
-                })
-            })
-            .unwrap_or(JsonValue::Null);
-        
+        Ok(())
+    }
+    
+    pub async fn update_signal_targets_and_stops(
+        &self,
+        signal_id: i64,
+        targets: &[crate::types::Target],
+        stop_losses: &[crate::types::StopLoss],
+    ) -> Result<(), reqwest::Error> {
         let update = serde_json::json!({
-            "target_hits": target_hits_json,
-            "stop_loss_hit": stop_loss_hit_json,
+            "targets": targets,
+            "stop_losses": stop_losses,
         });
 
         let response = self
@@ -209,15 +172,16 @@ impl SupabaseClient {
             .await?;
 
         if response.status().is_success() {
-            let hits_count = target_hits.iter().filter(|h| h.is_some()).count();
+            let targets_hit = targets.iter().filter(|t| t.timestamp.is_some()).count();
+            let stop_hit = stop_losses.first().and_then(|sl| sl.timestamp.as_ref()).is_some();
             info!(
-                "[Supabase] Updated target hits for signal {}: {}/{} targets hit",
-                signal_id, hits_count, target_hits.len()
+                "[Supabase] Updated signal {}: {}/{} targets hit, stop loss hit: {}",
+                signal_id, targets_hit, targets.len(), stop_hit
             );
         } else {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            warn!("[Supabase] Failed to update target hits for signal {}: {} - {}", signal_id, status, body);
+            warn!("[Supabase] Failed to update signal {}: {} - {}", signal_id, status, body);
         }
 
         Ok(())

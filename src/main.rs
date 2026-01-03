@@ -307,17 +307,18 @@ async fn process_box_update(state: &Arc<AppState>, pair: &str, data: &serde_json
         let entry = signal.entry.unwrap_or(0.0);
         let stop_losses = signal.stop_losses.clone();
         let targets = signal.targets.clone();
-        let first_stop = stop_losses.first().copied().unwrap_or(0.0);
-        let final_target = targets.last().copied().unwrap_or(0.0);
+        let first_stop = stop_losses.first().map(|sl| sl.price).unwrap_or(0.0);
+        let final_target = targets.last().map(|t| t.price).unwrap_or(0.0);
 
         info!("SIGNAL: {} {} L{} {:?}", signal.pair, signal.signal_type, signal.level, signal.pattern_sequence);
         for (i, b) in signal.box_details.iter().enumerate() {
             info!("  Box {}: {} H:{:.5} L:{:.5}", i, b.integer_value, b.high, b.low);
         }
         let final_rr = signal.risk_reward.last().copied().unwrap_or(0.0);
-        info!("  E:{:.5} S:{:?} (first: {:.5}) T:{:?} (final: {:.5}) R:R:{:?} (final: {:.2})", entry, stop_losses, first_stop, targets, final_target, signal.risk_reward, final_rr);
+        let stop_prices: Vec<f64> = stop_losses.iter().map(|sl| sl.price).collect();
+        let target_prices: Vec<f64> = targets.iter().map(|t| t.price).collect();
+        info!("  E:{:.5} S:{:?} (first: {:.5}) T:{:?} (final: {:.5}) R:R:{:?} (final: {:.2})", entry, stop_prices, first_stop, target_prices, final_target, signal.risk_reward, final_rr);
 
-        let target_hits = vec![None; targets.len()];
         let pair_upper = pair.to_uppercase();
 
         let active_signal = ActiveSignal {
@@ -328,8 +329,6 @@ async fn process_box_update(state: &Arc<AppState>, pair: &str, data: &serde_json
             entry,
             stop_losses,
             targets,
-            target_hits,
-            stop_loss_hit: None,
             risk_reward: signal.risk_reward.clone(),
             pattern_sequence: signal.pattern_sequence.clone(),
             box_details: signal.box_details.clone(),
