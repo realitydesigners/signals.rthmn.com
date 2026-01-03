@@ -2,6 +2,7 @@ use reqwest::Client;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use tracing::{info, warn};
+use chrono::{DateTime, Utc, TimeZone};
 
 #[derive(Clone)]
 pub struct SupabaseClient {
@@ -24,6 +25,15 @@ impl SupabaseClient {
         }
     }
 
+    fn timestamp_ms_to_iso_string(ts_ms: i64) -> String {
+        let seconds = ts_ms / 1000;
+        let nanos = ((ts_ms % 1000) * 1_000_000) as u32;
+        let dt = Utc.timestamp_opt(seconds, nanos)
+            .single()
+            .unwrap_or_else(Utc::now);
+        dt.to_rfc3339_opts(chrono::SecondsFormat::Micros, true)
+    }
+
     pub async fn insert_active_signal(
         &self,
         signal: &crate::tracker::ActiveSignal,
@@ -34,7 +44,7 @@ impl SupabaseClient {
                 .map(|hit| {
                     hit.map(|(ts, price)| {
                         serde_json::json!({
-                            "timestamp": ts,
+                            "timestamp": Self::timestamp_ms_to_iso_string(ts),
                             "price": price
                         })
                     })
@@ -46,7 +56,7 @@ impl SupabaseClient {
         let stop_loss_hit_json: JsonValue = signal.stop_loss_hit
             .map(|(ts, price)| {
                 serde_json::json!({
-                    "timestamp": ts,
+                    "timestamp": Self::timestamp_ms_to_iso_string(ts),
                     "price": price
                 })
             })
@@ -163,7 +173,7 @@ impl SupabaseClient {
                 .map(|hit| {
                     hit.map(|(ts, price)| {
                         serde_json::json!({
-                            "timestamp": ts,
+                            "timestamp": Self::timestamp_ms_to_iso_string(ts),
                             "price": price
                         })
                     })
@@ -175,7 +185,7 @@ impl SupabaseClient {
         let stop_loss_hit_json: JsonValue = stop_loss_hit
             .map(|(ts, price)| {
                 serde_json::json!({
-                    "timestamp": ts,
+                    "timestamp": Self::timestamp_ms_to_iso_string(ts),
                     "price": price
                 })
             })
