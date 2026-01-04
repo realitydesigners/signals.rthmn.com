@@ -1,190 +1,168 @@
-pub fn get_instrument_config(pair: &str) -> (f64, u8) {
-    match pair {
-        // ============ CRYPTO ============
-        "BTCUSD" => (10.0, 0),
-        "ETHUSD" => (0.1, 1),
-        "XRPUSD" => (0.0001, 4),
-        "DOTUSD" => (0.0001, 4),
-        "ADAUSD" => (0.0001, 4),
-        "SOLUSD" => (0.1, 1),
-        "BNBUSD" => (0.1, 1),
-        "DOGEUSD" => (0.00001, 5),
-        "MATICUSD" => (0.0001, 4),
-        "AVAXUSD" => (0.01, 2),
-        "LINKUSD" => (0.01, 2),
-        "UNIUSD" => (0.0001, 4),
-        "ATOMUSD" => (0.01, 2),
-        "LTCUSD" => (0.1, 1),
-        "FILUSD" => (0.01, 2),
-        "TRXUSD" => (0.00001, 5),
-        "XLMUSD" => (0.00001, 5),
-        "EOSUSD" => (0.0001, 4),
-        "XTZUSD" => (0.0001, 4),
-        "ALGOUSD" => (0.0001, 4),
-        "NEARUSD" => (0.0001, 4),
-        "ICPUSD" => (0.01, 2),
-        "AAVEUSD" => (0.01, 2),
-        "FTMUSD" => (0.0001, 4),
-        "SANDUSD" => (0.0001, 4),
-        "MANAUSD" => (0.0001, 4),
-        "SHIBAUSD" => (0.00001, 5),
-        "VETUSD" => (0.0001, 4),
-        "LUNAUSD" => (0.0001, 4),
-        "CROUSD" => (0.0001, 4),
-        "AXSUSD" => (0.01, 2),
-        "MKRUSD" => (1.0, 0),
-        "SNXUSD" => (0.0001, 4),
-        "COMPUSD" => (0.01, 2),
-        "GRTUSD" => (0.0001, 4),
-        "YFIUSD" => (10.0, 0),
-        "DASHUSD" => (0.01, 2),
-        "ZECUSD" => (0.01, 2),
-        "XMRUSD" => (0.01, 2),
-        "BCHUSD" => (0.01, 2),
-        "ENJUSD" => (0.0001, 4),
-        "CHZUSD" => (0.0001, 4),
-        "BATUSD" => (0.0001, 4),
-        "QNTUSD" => (0.0001, 4),
-        "OMGUSD" => (0.0001, 4),
-        "KAVAUSD" => (0.0001, 4),
-        "KSMUSD" => (0.01, 2),
-        "NEOUSD" => (0.0001, 4),
-        "ONEUSD" => (0.0001, 4),
-        "RVNUSD" => (0.0001, 4),
-        "ZILUSD" => (0.0001, 4),
-        "ANKRUSD" => (0.0001, 4),
-        "CRVUSD" => (0.0001, 4),
-        "RENUSUD" => (0.0001, 4),
-        "SKLUSD" => (0.0001, 4),
-        "SRMUSD" => (0.0001, 4),
+use lazy_static::lazy_static;
+use std::collections::HashMap;
+use std::sync::RwLock;
 
-        // ============ FOREX ============
-        "EURUSD" => (0.00001, 5),
-        "GBPUSD" => (0.00001, 5),
-        "USDJPY" => (0.001, 3),
-        "AUDUSD" => (0.00001, 5),
-        "USDCAD" => (0.00001, 5),
-        "USDCHF" => (0.00001, 5),
-        "NZDUSD" => (0.00001, 5),
-        "EURGBP" => (0.00001, 5),
-        "EURJPY" => (0.001, 3),
-        "GBPJPY" => (0.001, 3),
-        "EURAUD" => (0.00001, 5),
-        "EURCAD" => (0.00001, 5),
-        "EURNZD" => (0.00001, 5),
-        "EURCHF" => (0.00001, 5),
-        "GBPAUD" => (0.00001, 5),
-        "GBPCAD" => (0.00001, 5),
-        "GBPCHF" => (0.00001, 5),
-        "GBPNZD" => (0.00001, 5),
-        "AUDCAD" => (0.00001, 5),
-        "AUDCHF" => (0.00001, 5),
-        "AUDJPY" => (0.001, 3),
-        "AUDNZD" => (0.00001, 5),
-        "CADJPY" => (0.001, 3),
-        "CADCHF" => (0.00001, 5),
-        "CHFJPY" => (0.001, 3),
-        "NZDCAD" => (0.00001, 5),
-        "NZDCHF" => (0.00001, 5),
-        "NZDJPY" => (0.001, 3),
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssetClass {
+    Stocks,
+    Forex,
+    Crypto,
+}
 
-        // ============ METALS ============
-        "XAUUSD" => (0.1, 1),
-        "XAGUSD" => (0.001, 3),
-
-        // ============ EQUITY ============
-        "AAPL" => (0.01, 2),
-        "MSFT" => (0.01, 2),
-        "GOOGL" => (0.01, 2),
-        "AMZN" => (0.01, 2),
-        "META" => (0.01, 2),
-        "NVDA" => (0.01, 2),
-        "TSLA" => (0.01, 2),
-        "JPM" => (0.01, 2),
-        "V" => (0.01, 2),
-        "WMT" => (0.01, 2),
-        "JNJ" => (0.01, 2),
-        "PG" => (0.01, 2),
-        "BAC" => (0.01, 2),
-        "DIS" => (0.01, 2),
-        "NFLX" => (0.01, 2),
-        "INTC" => (0.01, 2),
-        "KO" => (0.01, 2),
-        "PEP" => (0.01, 2),
-        "AMD" => (0.01, 2),
-        "ADBE" => (0.01, 2),
-        "CSCO" => (0.01, 2),
-        "CMCSA" => (0.01, 2),
-        "COST" => (0.01, 2),
-        "DHR" => (0.01, 2),
-        "HD" => (0.01, 2),
-        "MA" => (0.01, 2),
-        "MRK" => (0.01, 2),
-        "NKE" => (0.01, 2),
-        "ORCL" => (0.01, 2),
-        "CRM" => (0.01, 2),
-        "TMO" => (0.01, 2),
-        "UNH" => (0.01, 2),
-        "XOM" => (0.01, 2),
-        "ABBV" => (0.01, 2),
-        "ABT" => (0.01, 2),
-        "ACN" => (0.01, 2),
-        "AVGO" => (0.01, 2),
-        "CVX" => (0.01, 2),
-        "LLY" => (0.01, 2),
-        "MCD" => (0.01, 2),
-        "MRNA" => (0.01, 2),
-        "PYPL" => (0.01, 2),
-        "QCOM" => (0.01, 2),
-        "UNP" => (0.01, 2),
-        "CVS" => (0.01, 2),
-        "LOW" => (0.01, 2),
-        "MDT" => (0.01, 2),
-        "MS" => (0.01, 2),
-        "NEE" => (0.01, 2),
-        "SBUX" => (0.01, 2),
-        "TGT" => (0.01, 2),
-        "UPS" => (0.01, 2),
-        "CAT" => (0.01, 2),
-        "GE" => (0.01, 2),
-        "GM" => (0.01, 2),
-        "IBM" => (0.01, 2),
-        "MMM" => (0.01, 2),
-        "BA" => (0.01, 2),
-        "DOW" => (0.01, 2),
-        "GS" => (0.01, 2),
-        "HON" => (0.01, 2),
-        "RTX" => (0.01, 2),
-        "WFC" => (0.01, 2),
-
-        // ============ ETF ============
-        "SPY" => (0.01, 2),
-        "QQQ" => (0.01, 2),
-        "IWM" => (0.01, 2),
-        "VTI" => (0.01, 2),
-        "VOO" => (0.01, 2),
-        "DIA" => (0.01, 2),
-        "EFA" => (0.01, 2),
-        "EEM" => (0.01, 2),
-        "TLT" => (0.01, 2),
-        "GLD" => (0.01, 2),
-        "VGK" => (0.01, 2),
-        "XLV" => (0.01, 2),
-        "XLI" => (0.01, 2),
-        "XLU" => (0.01, 2),
-        "XLP" => (0.01, 2),
-        "XLB" => (0.01, 2),
-        "XLC" => (0.01, 2),
-        "XLRE" => (0.01, 2),
-        "XLY" => (0.01, 2),
-        "GOVT" => (0.01, 2),
-        "LQD" => (0.01, 2),
-        "SPDW" => (0.01, 2),
-        "SPEM" => (0.01, 2),
-        "SPYG" => (0.01, 2),
-        "SPYV" => (0.01, 2),
-
-        // ============ DEFAULT ============
-        _ => (0.01, 2),
+fn get_asset_class(pair: &str) -> AssetClass {
+    if pair == "XAUUSD" || pair == "XAGUSD" {
+        return AssetClass::Forex;
     }
+    
+    if pair.ends_with("USD") && pair.len() >= 6 {
+        let crypto_prefixes = ["ADA", "APT", "ASM", "BIGTIME", "BTC", "CLV", "ETH", "FET",
+            "FIDA", "JTO", "LTC", "MEW", "PLU", "RARI", "SAND", "SEAM",
+            "SOL", "TAO", "TOKEN", "UNI", "USDC", "USDG", "USDT", "XLM",
+            "XMR", "XRP", "ZEC"];
+        for prefix in &crypto_prefixes {
+            if pair.len() >= prefix.len() && pair.starts_with(prefix) {
+                return AssetClass::Crypto;
+            }
+        }
+    }
+    
+    if pair.len() == 6 && pair.chars().all(|c| c.is_ascii_alphabetic()) {
+        let forex_quotes = ["USD", "JPY", "EUR", "GBP", "AUD", "CAD", "CHF", "NZD"];
+        if let Some(quote) = pair.get(3..) {
+            if forex_quotes.contains(&quote) {
+                return AssetClass::Forex;
+            }
+        }
+    }
+    
+    AssetClass::Stocks
+}
+
+fn calculate_digits_from_point(point: f64) -> u8 {
+    if point >= 1.0 {
+        0
+    } else {
+        let mut p = point;
+        let mut digits = 0;
+        while p < 1.0 && digits < 10 {
+            p *= 10.0;
+            digits += 1;
+        }
+        digits
+    }
+}
+
+fn calculate_point_from_price(price: f64, asset_class: AssetClass) -> f64 {
+    let abs_price = price.abs();
+    
+    match asset_class {
+        AssetClass::Forex => {
+            if abs_price < 10.0 {
+                0.00001
+            } else {
+                0.001
+            }
+        }
+        AssetClass::Crypto => {
+            if abs_price >= 10000.0 {
+                10.0
+            } else if abs_price >= 1000.0 {
+                1.0
+            } else if abs_price >= 100.0 {
+                0.1
+            } else if abs_price >= 10.0 {
+                0.01
+            } else if abs_price >= 1.0 {
+                0.001
+            } else if abs_price >= 0.1 {
+                0.0001
+            } else if abs_price >= 0.01 {
+                0.00001
+            } else {
+                0.000001
+            }
+        }
+        AssetClass::Stocks => {
+            if abs_price >= 1000.0 {
+                1.0
+            } else {
+                0.01
+            }
+        }
+    }
+}
+
+lazy_static! {
+    static ref CONFIG_CACHE: RwLock<HashMap<String, (f64, u8)>> = 
+        RwLock::new(HashMap::with_capacity(2000));
+    static ref PRICE_CACHE: RwLock<HashMap<String, f64>> = 
+        RwLock::new(HashMap::with_capacity(2000));
+}
+
+pub fn update_instrument_price(pair: &str, price: f64) -> bool {
+    let asset_class = get_asset_class(pair);
+    
+    let should_update = {
+        let price_cache = PRICE_CACHE.read().unwrap();
+        !price_cache.contains_key(pair)
+    };
+    
+    if should_update {
+        let point = calculate_point_from_price(price, asset_class);
+        let digits = calculate_digits_from_point(point);
+        
+        {
+            let mut price_cache = PRICE_CACHE.write().unwrap();
+            price_cache.insert(pair.to_string(), price);
+        }
+        
+        {
+            let mut config_cache = CONFIG_CACHE.write().unwrap();
+            config_cache.insert(pair.to_string(), (point, digits));
+        }
+        
+        true
+    } else {
+        false
+    }
+}
+
+pub fn get_instrument_config(pair: &str) -> (f64, u8) {
+    {
+        let cache = CONFIG_CACHE.read().unwrap();
+        if let Some(&config) = cache.get(pair) {
+            return config;
+        }
+    }
+    
+    let asset_class = get_asset_class(pair);
+    let point = match asset_class {
+        AssetClass::Forex => {
+            if pair.contains("JPY") {
+                0.001
+            } else {
+                0.00001
+            }
+        }
+        AssetClass::Crypto => {
+            if pair == "BTCUSD" || pair == "YFIUSD" {
+                10.0
+            } else if pair == "MKRUSD" {
+                1.0
+            } else {
+                0.1
+            }
+        }
+        AssetClass::Stocks => 0.01,
+    };
+    
+    let digits = calculate_digits_from_point(point);
+    let config = (point, digits);
+    
+    {
+        let mut cache = CONFIG_CACHE.write().unwrap();
+        cache.insert(pair.to_string(), config);
+    }
+    
+    config
 }

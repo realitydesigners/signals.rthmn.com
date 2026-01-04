@@ -238,6 +238,8 @@ async fn process_box_update(state: &Arc<AppState>, pair: &str, data: &serde_json
         return;
     }
 
+    signals_rthmn::instruments::update_instrument_price(pair, price);
+
     // Step 1: Check existing active signals for price hits (stop loss or targets)
     let pair_upper = pair.to_uppercase();
     let settlements = state.tracker.check_price(&pair_upper, price).await;
